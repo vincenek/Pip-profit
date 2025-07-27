@@ -6,6 +6,7 @@
     <title>PipProfit - Forex Profit Calculator</title>
     <link rel="manifest" href="/manifest.json">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <script src="https://js.paystack.co/v1/inline.js"></script>
     <style>
         :root {
             --primary: #2563eb;
@@ -16,6 +17,7 @@
             --gray: #64748b;
             --border: #e2e8f0;
             --shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+            --premium: #f59e0b;
         }
         
         * {
@@ -144,6 +146,14 @@
             color: var(--primary);
         }
         
+        .btn-premium {
+            background: linear-gradient(135deg, var(--premium), #f97316);
+        }
+        
+        .btn-premium:hover {
+            background: linear-gradient(135deg, #e6900e, #ea580c);
+        }
+        
         .features {
             padding: 4rem 0;
         }
@@ -199,6 +209,17 @@
             padding: 30px;
         }
         
+        .premium-badge {
+            background: linear-gradient(135deg, var(--premium), #f97316);
+            color: white;
+            padding: 5px 10px;
+            border-radius: 20px;
+            font-size: 0.8rem;
+            display: inline-block;
+            margin-left: 10px;
+            vertical-align: middle;
+        }
+        
         .input-group {
             margin-bottom: 20px;
         }
@@ -209,7 +230,7 @@
             font-weight: 500;
         }
         
-        .input-group input {
+        .input-group input, .input-group select {
             width: 100%;
             padding: 12px 15px;
             border: 1px solid var(--border);
@@ -261,6 +282,11 @@
             box-shadow: var(--shadow);
             max-width: 500px;
             margin: 0 auto;
+        }
+        
+        .country-selector {
+            margin: 20px auto;
+            max-width: 300px;
         }
         
         .price {
@@ -465,6 +491,80 @@
         .user-table tr:hover {
             background: #f8fafc;
         }
+        
+        /* Payment Modal */
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.7);
+            z-index: 1000;
+            justify-content: center;
+            align-items: center;
+        }
+        
+        .modal-content {
+            background: white;
+            border-radius: 15px;
+            width: 90%;
+            max-width: 500px;
+            padding: 30px;
+            position: relative;
+        }
+        
+        .modal-close {
+            position: absolute;
+            top: 15px;
+            right: 15px;
+            background: none;
+            border: none;
+            font-size: 1.5rem;
+            cursor: pointer;
+            color: var(--gray);
+        }
+        
+        .payment-form .input-group {
+            margin-bottom: 15px;
+        }
+        
+        /* Risk Reward Calculator */
+        .rr-calculator {
+            background: #fffbeb;
+            padding: 20px;
+            border-radius: 10px;
+            margin: 30px 0;
+            border-left: 4px solid var(--premium);
+            display: none;
+        }
+        
+        .rr-calculator h3 {
+            display: flex;
+            align-items: center;
+            margin-bottom: 20px;
+            color: #b45309;
+        }
+        
+        .rr-calculator h3 i {
+            margin-right: 10px;
+        }
+        
+        .rr-result {
+            text-align: center;
+            padding: 15px;
+            margin-top: 20px;
+            background: #fef3c7;
+            border-radius: 8px;
+            display: none;
+        }
+        
+        .rr-ratio {
+            font-size: 2rem;
+            font-weight: 700;
+            color: #b45309;
+        }
     </style>
 </head>
 <body>
@@ -481,6 +581,7 @@
                         <a href="#features">Features</a>
                         <a href="#calculator">Calculator</a>
                         <a href="#pricing">Pricing</a>
+                        <a href="#" id="adminLink">Admin</a>
                     </div>
                     <button class="mobile-menu-btn" id="menuBtn">
                         <i class="fas fa-bars"></i>
@@ -493,8 +594,8 @@
             <div class="container">
                 <h1>Calculate Your Forex Profits with Precision</h1>
                 <p>PipProfit helps traders instantly calculate potential profit or loss for any Forex trade. Perfect for both beginners and experienced traders.</p>
-                <a href="#pricing" class="btn">Get Started</a>
-                <a href="#calculator" class="btn btn-outline">Try Demo</a>
+                <a href="#pricing" class="btn">Get Premium Access</a>
+                <a href="#calculator" class="btn btn-outline">Try Free Calculator</a>
             </div>
         </section>
 
@@ -518,10 +619,10 @@
                     </div>
                     <div class="feature-card">
                         <div class="feature-icon">
-                            <i class="fas fa-history"></i>
+                            <i class="fas fa-crown"></i>
                         </div>
-                        <h3>Trade History</h3>
-                        <p>Save and review your past calculations to improve your trading strategy.</p>
+                        <h3>Premium Tools</h3>
+                        <p>Access advanced tools like Risk-Reward calculator and historical data with premium.</p>
                     </div>
                 </div>
             </div>
@@ -567,29 +668,64 @@
                         <div class="profit-amount" id="profitAmount">$0.00</div>
                         <p id="resultDetails">The estimated profit/loss for your trade</p>
                     </div>
+                    
+                    <!-- Risk Reward Calculator (Premium Feature) -->
+                    <div class="rr-calculator" id="rrCalculator">
+                        <h3><i class="fas fa-crown"></i> Risk Reward Ratio Calculator</h3>
+                        <div class="input-row">
+                            <div class="input-group">
+                                <label for="riskAmount">Risk Amount ($)</label>
+                                <input type="number" id="riskAmount" placeholder="Amount you're risking">
+                            </div>
+                            <div class="input-group">
+                                <label for="rewardAmount">Reward Amount ($)</label>
+                                <input type="number" id="rewardAmount" placeholder="Potential reward">
+                            </div>
+                        </div>
+                        <button class="btn btn-premium" style="width: 100%;" id="calculateRR">Calculate RR Ratio</button>
+                        <div class="rr-result" id="rrResult">
+                            <h3>Risk Reward Ratio</h3>
+                            <div class="rr-ratio" id="rrRatio">0.00</div>
+                            <p id="rrMessage">Your risk to reward ratio</p>
+                        </div>
+                    </div>
                 </div>
             </div>
         </section>
 
         <section class="pricing" id="pricing">
             <div class="container">
-                <h2 class="section-title">Unlock Full Features</h2>
+                <h2 class="section-title">Unlock Premium Features</h2>
                 <div class="pricing-card">
                     <h3>Premium Access</h3>
                     <p>Unlock unlimited calculations, save trade history, and get advanced features</p>
-                    <div class="price">$9.99 <span>/month</span></div>
+                    
+                    <div class="country-selector">
+                        <div class="input-group">
+                            <label for="country">Select Your Country</label>
+                            <select id="country">
+                                <option value="NG">Nigeria (₦1500)</option>
+                                <option value="US">United States ($9.99)</option>
+                                <option value="UK">United Kingdom (£7.99)</option>
+                                <option value="EU">Europe (€8.99)</option>
+                                <option value="other">Other Countries ($9.99)</option>
+                            </select>
+                        </div>
+                    </div>
+                    
+                    <div class="price" id="dynamicPrice">₦1,500</div>
                     
                     <ul class="benefits">
                         <li><i class="fas fa-check-circle"></i> Unlimited profit calculations</li>
                         <li><i class="fas fa-check-circle"></i> Save and review trade history</li>
+                        <li><i class="fas fa-check-circle"></i> Risk-Reward Ratio calculator</li>
                         <li><i class="fas fa-check-circle"></i> Multiple currency pairs</li>
-                        <li><i class="fas fa-check-circle"></i> Advanced risk management tools</li>
                         <li><i class="fas fa-check-circle"></i> Priority support</li>
                     </ul>
                     
                     <!-- Paystack Payment Button -->
-                    <button class="btn" id="paystackButton" style="width: 100%;">
-                        <i class="fas fa-lock"></i> Subscribe with Paystack
+                    <button class="btn btn-premium" id="paystackButton" style="width: 100%;">
+                        <i class="fas fa-lock"></i> Subscribe Now with Paystack
                     </button>
                     <p style="margin-top: 15px; font-size: 0.9rem;">Secure payment powered by Paystack</p>
                 </div>
@@ -609,13 +745,15 @@
                             <li><a href="#features">Features</a></li>
                             <li><a href="#calculator">Calculator</a></li>
                             <li><a href="#pricing">Pricing</a></li>
+                            <li><a href="#">Privacy Policy</a></li>
                         </ul>
                     </div>
                     <div class="footer-column">
-                        <h3>Legal</h3>
+                        <h3>Contact</h3>
                         <ul class="footer-links">
-                            <li><a href="#">Privacy Policy</a></li>
-                            <li><a href="#">Terms of Service</a></li>
+                            <li><i class="fas fa-envelope"></i> support@pipprofit.com</li>
+                            <li><i class="fas fa-phone"></i> +234 812 345 6789</li>
+                            <li><i class="fas fa-map-marker-alt"></i> Lagos, Nigeria</li>
                         </ul>
                     </div>
                 </div>
@@ -628,15 +766,17 @@
     
     <!-- Admin Page (Hidden by default) -->
     <div id="admin-page" style="display: none;">
-        <div class="admin-login" id="adminLogin">
-            <h2>Admin Login</h2>
-            <div class="input-group">
-                <label for="adminPassword">Password</label>
-                <input type="password" id="adminPassword" placeholder="Enter admin password">
+        <header>
+            <div class="container">
+                <nav>
+                    <div class="logo">
+                        <i class="fas fa-chart-line"></i>
+                        <span>PipProfit Admin</span>
+                    </div>
+                    <button class="btn" id="logoutBtn">Logout</button>
+                </nav>
             </div>
-            <button class="btn" style="width: 100%;" id="loginBtn">Login</button>
-            <p id="loginError" style="color: #ef4444; margin-top: 15px; text-align: center; display: none;">Incorrect password. Please try again.</p>
-        </div>
+        </header>
         
         <div class="admin-content" id="adminContent">
             <div class="container">
@@ -654,6 +794,7 @@
                             <th>Name</th>
                             <th>Email</th>
                             <th>Subscription</th>
+                            <th>Payment</th>
                             <th>Join Date</th>
                         </tr>
                     </thead>
@@ -662,6 +803,35 @@
                     </tbody>
                 </table>
             </div>
+        </div>
+    </div>
+    
+    <!-- Payment Modal -->
+    <div class="modal" id="paymentModal">
+        <div class="modal-content">
+            <button class="modal-close" id="modalClose">&times;</button>
+            <h2 style="text-align: center; margin-bottom: 20px;">Complete Your Payment</h2>
+            
+            <form class="payment-form" id="paymentForm">
+                <div class="input-group">
+                    <label for="email">Email Address</label>
+                    <input type="email" id="email" placeholder="Your email address" required>
+                </div>
+                
+                <div class="input-group">
+                    <label for="name">Full Name</label>
+                    <input type="text" id="name" placeholder="Your full name" required>
+                </div>
+                
+                <div class="input-group">
+                    <label for="phone">Phone Number</label>
+                    <input type="tel" id="phone" placeholder="Your phone number">
+                </div>
+                
+                <button type="button" class="btn btn-premium" id="processPayment" style="width: 100%;">
+                    <i class="fas fa-lock"></i> Pay Now
+                </button>
+            </form>
         </div>
     </div>
     
@@ -682,16 +852,56 @@
         const profitAmount = document.getElementById('profitAmount');
         const resultDetails = document.getElementById('resultDetails');
         const paystackButton = document.getElementById('paystackButton');
-        const loginBtn = document.getElementById('loginBtn');
-        const adminPassword = document.getElementById('adminPassword');
-        const loginError = document.getElementById('loginError');
-        const adminContent = document.getElementById('adminContent');
+        const logoutBtn = document.getElementById('logoutBtn');
         const landingPage = document.getElementById('landing-page');
         const adminPage = document.getElementById('admin-page');
+        const adminLink = document.getElementById('adminLink');
         const userTableBody = document.getElementById('userTableBody');
         const pwaInstall = document.getElementById('pwaInstall');
         const installBtn = document.getElementById('installBtn');
         const closePwa = document.getElementById('closePwa');
+        const paymentModal = document.getElementById('paymentModal');
+        const modalClose = document.getElementById('modalClose');
+        const processPayment = document.getElementById('processPayment');
+        const countrySelect = document.getElementById('country');
+        const dynamicPrice = document.getElementById('dynamicPrice');
+        const calculateRR = document.getElementById('calculateRR');
+        const rrCalculator = document.getElementById('rrCalculator');
+        const rrResult = document.getElementById('rrResult');
+        const rrRatio = document.getElementById('rrRatio');
+        
+        // Check if user is premium (in a real app, this would come from backend)
+        let isPremiumUser = localStorage.getItem('premiumUser') === 'true';
+        
+        // Prices by country
+        const prices = {
+            'NG': { amount: 150000, currency: 'NGN', display: '₦1,500' },
+            'US': { amount: 999, currency: 'USD', display: '$9.99' },
+            'UK': { amount: 799, currency: 'GBP', display: '£7.99' },
+            'EU': { amount: 899, currency: 'EUR', display: '€8.99' },
+            'other': { amount: 999, currency: 'USD', display: '$9.99' }
+        };
+        
+        // Current payment details
+        let currentPayment = prices['NG'];
+        
+        // Initialize the app
+        function initApp() {
+            // Show premium features if user is premium
+            if (isPremiumUser) {
+                rrCalculator.style.display = 'block';
+            }
+            
+            // Set initial price display
+            updatePriceDisplay();
+        }
+        
+        // Update price display based on country selection
+        function updatePriceDisplay() {
+            const country = countrySelect.value;
+            currentPayment = prices[country];
+            dynamicPrice.textContent = currentPayment.display;
+        }
         
         // Toggle mobile menu
         menuBtn.addEventListener('click', () => {
@@ -739,36 +949,107 @@
             result.scrollIntoView({ behavior: 'smooth', block: 'center' });
         });
         
-        // Paystack payment integration
-        paystackButton.addEventListener('click', () => {
-            // In a real implementation, this would open Paystack payment modal
-            alert('Redirecting to Paystack payment... In a real app, this would process payment.');
+        // Calculate Risk Reward Ratio
+        calculateRR.addEventListener('click', () => {
+            const risk = parseFloat(document.getElementById('riskAmount').value) || 0;
+            const reward = parseFloat(document.getElementById('rewardAmount').value) || 0;
             
-            // Simulate successful payment
-            setTimeout(() => {
-                alert('Payment successful! You now have full access to PipProfit.');
-                // Redirect to calculator page in a real app
-                window.location.hash = '#calculator';
-            }, 1500);
+            if (risk <= 0 || reward <= 0) {
+                alert('Please enter valid amounts');
+                return;
+            }
+            
+            const ratio = reward / risk;
+            rrRatio.textContent = ratio.toFixed(2);
+            rrResult.style.display = 'block';
         });
         
-        // Admin login
-        loginBtn.addEventListener('click', () => {
-            if (adminPassword.value === 'profit123') {
-                adminContent.style.display = 'block';
-                document.getElementById('adminLogin').style.display = 'none';
-            } else {
-                loginError.style.display = 'block';
+        // Open payment modal
+        paystackButton.addEventListener('click', () => {
+            paymentModal.style.display = 'flex';
+        });
+        
+        // Close payment modal
+        modalClose.addEventListener('click', () => {
+            paymentModal.style.display = 'none';
+        });
+        
+        // Process payment with Paystack
+        processPayment.addEventListener('click', () => {
+            const email = document.getElementById('email').value;
+            const name = document.getElementById('name').value;
+            
+            if (!email || !name) {
+                alert('Please fill in all required fields');
+                return;
             }
+            
+            // Close modal
+            paymentModal.style.display = 'none';
+            
+            // Process payment with Paystack
+            const handler = PaystackPop.setup({
+                key: 'pk_test_xxxxxxxxxxxxxxxxxxxx', // Replace with your Paystack public key
+                email: email,
+                amount: currentPayment.amount,
+                currency: currentPayment.currency,
+                ref: 'PP' + Date.now(), // Generate unique reference
+                metadata: {
+                    custom_fields: [
+                        { display_name: "Full Name", variable_name: "full_name", value: name }
+                    ]
+                },
+                callback: function(response) {
+                    // Payment successful! Unlock premium features
+                    localStorage.setItem('premiumUser', 'true');
+                    isPremiumUser = true;
+                    
+                    // Show success message
+                    alert('Payment successful! Premium features are now unlocked.');
+                    
+                    // Show premium features
+                    rrCalculator.style.display = 'block';
+                    
+                    // Redirect to calculator
+                    window.location.hash = '#calculator';
+                },
+                onClose: function() {
+                    alert('Payment was not completed. You can try again later.');
+                }
+            });
+            
+            handler.openIframe();
+        });
+        
+        // Country selector change
+        countrySelect.addEventListener('change', updatePriceDisplay);
+        
+        // Admin login
+        adminLink.addEventListener('click', (e) => {
+            e.preventDefault();
+            const password = prompt('Enter admin password:');
+            if (password === 'profit123') {
+                landingPage.style.display = 'none';
+                adminPage.style.display = 'block';
+                populateUserTable();
+            } else {
+                alert('Incorrect password');
+            }
+        });
+        
+        // Logout from admin
+        logoutBtn.addEventListener('click', () => {
+            landingPage.style.display = 'block';
+            adminPage.style.display = 'none';
         });
         
         // Simulated user data
         const users = [
-            { id: 1, name: 'John Trader', email: 'john@example.com', subscription: 'Premium', joinDate: '2023-01-15' },
-            { id: 2, name: 'Sarah Forex', email: 'sarah@example.com', subscription: 'Premium', joinDate: '2023-02-20' },
-            { id: 3, name: 'Mike Investor', email: 'mike@example.com', subscription: 'Premium', joinDate: '2023-03-10' },
-            { id: 4, name: 'Emily Stocks', email: 'emily@example.com', subscription: 'Basic', joinDate: '2023-04-05' },
-            { id: 5, name: 'David Exchange', email: 'david@example.com', subscription: 'Premium', joinDate: '2023-05-18' }
+            { id: 1, name: 'John Trader', email: 'john@example.com', subscription: 'Premium', payment: '₦1,500', joinDate: '2023-01-15' },
+            { id: 2, name: 'Sarah Forex', email: 'sarah@example.com', subscription: 'Premium', payment: '$9.99', joinDate: '2023-02-20' },
+            { id: 3, name: 'Mike Investor', email: 'mike@example.com', subscription: 'Premium', payment: '£7.99', joinDate: '2023-03-10' },
+            { id: 4, name: 'Emily Stocks', email: 'emily@example.com', subscription: 'Basic', payment: 'Free', joinDate: '2023-04-05' },
+            { id: 5, name: 'David Exchange', email: 'david@example.com', subscription: 'Premium', payment: '€8.99', joinDate: '2023-05-18' }
         ];
         
         // Populate user table
@@ -781,17 +1062,11 @@
                     <td>${user.name}</td>
                     <td>${user.email}</td>
                     <td>${user.subscription}</td>
+                    <td>${user.payment}</td>
                     <td>${user.joinDate}</td>
                 `;
                 userTableBody.appendChild(row);
             });
-        }
-        
-        // Check if URL has admin parameter
-        if (window.location.search.includes('admin')) {
-            landingPage.style.display = 'none';
-            adminPage.style.display = 'block';
-            populateUserTable();
         }
         
         // PWA Installation Prompt
@@ -843,6 +1118,9 @@
                 });
             });
         }
+        
+        // Initialize the app
+        initApp();
     </script>
 </body>
 </html>
