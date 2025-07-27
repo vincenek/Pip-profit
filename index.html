@@ -1,0 +1,848 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PipProfit - Forex Profit Calculator</title>
+    <link rel="manifest" href="/manifest.json">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        :root {
+            --primary: #2563eb;
+            --primary-dark: #1d4ed8;
+            --secondary: #10b981;
+            --dark: #1e293b;
+            --light: #f8fafc;
+            --gray: #64748b;
+            --border: #e2e8f0;
+            --shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+        }
+        
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+        
+        body {
+            background-color: #f1f5f9;
+            color: var(--dark);
+            line-height: 1.6;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 0 20px;
+        }
+        
+        header {
+            background: linear-gradient(135deg, var(--primary), var(--primary-dark));
+            color: white;
+            padding: 1rem 0;
+            box-shadow: var(--shadow);
+            position: sticky;
+            top: 0;
+            z-index: 100;
+        }
+        
+        nav {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .logo {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-weight: 700;
+            font-size: 1.5rem;
+        }
+        
+        .logo i {
+            font-size: 1.8rem;
+        }
+        
+        .nav-links {
+            display: flex;
+            gap: 20px;
+        }
+        
+        .nav-links a {
+            color: white;
+            text-decoration: none;
+            font-weight: 500;
+            padding: 5px 10px;
+            border-radius: 4px;
+            transition: background 0.3s;
+        }
+        
+        .nav-links a:hover {
+            background: rgba(255, 255, 255, 0.1);
+        }
+        
+        .mobile-menu-btn {
+            display: none;
+            background: none;
+            border: none;
+            color: white;
+            font-size: 1.5rem;
+            cursor: pointer;
+        }
+        
+        .hero {
+            background: linear-gradient(rgba(37, 99, 235, 0.9), rgba(29, 78, 216, 0.9)), url('https://images.unsplash.com/photo-1611974789855-9c2a0a7236a3?ixlib=rb-4.0.3&ixid=M3wxMjA3fDB8MHxwaG90by1wYWdlfHx8fGVufDB8fHx8fA%3D%3D&auto=format&fit=crop&w=1200&q=80');
+            background-size: cover;
+            background-position: center;
+            color: white;
+            padding: 4rem 0;
+            text-align: center;
+        }
+        
+        .hero h1 {
+            font-size: 2.5rem;
+            margin-bottom: 1rem;
+        }
+        
+        .hero p {
+            font-size: 1.2rem;
+            max-width: 700px;
+            margin: 0 auto 2rem;
+        }
+        
+        .btn {
+            display: inline-block;
+            background-color: var(--secondary);
+            color: white;
+            padding: 12px 28px;
+            border-radius: 50px;
+            text-decoration: none;
+            font-weight: 600;
+            font-size: 1.1rem;
+            transition: all 0.3s;
+            border: none;
+            cursor: pointer;
+            box-shadow: var(--shadow);
+        }
+        
+        .btn:hover {
+            transform: translateY(-3px);
+            box-shadow: 0 10px 20px rgba(0, 0, 0, 0.1);
+            background-color: #0ca678;
+        }
+        
+        .btn-outline {
+            background: transparent;
+            border: 2px solid white;
+            margin-left: 15px;
+        }
+        
+        .btn-outline:hover {
+            background: white;
+            color: var(--primary);
+        }
+        
+        .features {
+            padding: 4rem 0;
+        }
+        
+        .section-title {
+            text-align: center;
+            margin-bottom: 3rem;
+            font-size: 2rem;
+            color: var(--dark);
+        }
+        
+        .features-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 30px;
+        }
+        
+        .feature-card {
+            background: white;
+            border-radius: 10px;
+            padding: 30px;
+            text-align: center;
+            box-shadow: var(--shadow);
+            transition: transform 0.3s;
+        }
+        
+        .feature-card:hover {
+            transform: translateY(-10px);
+        }
+        
+        .feature-icon {
+            font-size: 3rem;
+            color: var(--primary);
+            margin-bottom: 20px;
+        }
+        
+        .feature-card h3 {
+            margin-bottom: 15px;
+            font-size: 1.5rem;
+        }
+        
+        .calculator {
+            background: white;
+            padding: 4rem 0;
+        }
+        
+        .calculator-container {
+            max-width: 800px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 15px;
+            box-shadow: var(--shadow);
+            padding: 30px;
+        }
+        
+        .input-group {
+            margin-bottom: 20px;
+        }
+        
+        .input-group label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: 500;
+        }
+        
+        .input-group input {
+            width: 100%;
+            padding: 12px 15px;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            font-size: 1rem;
+        }
+        
+        .input-row {
+            display: flex;
+            gap: 20px;
+        }
+        
+        .input-row .input-group {
+            flex: 1;
+        }
+        
+        .result {
+            background: #dbeafe;
+            padding: 20px;
+            border-radius: 8px;
+            margin: 30px 0;
+            text-align: center;
+        }
+        
+        .result h3 {
+            margin-bottom: 15px;
+        }
+        
+        .profit-amount {
+            font-size: 2.5rem;
+            font-weight: 700;
+            color: var(--primary);
+        }
+        
+        .loss {
+            color: #ef4444;
+        }
+        
+        .pricing {
+            background: #f1f5f9;
+            padding: 4rem 0;
+            text-align: center;
+        }
+        
+        .pricing-card {
+            background: white;
+            border-radius: 15px;
+            padding: 40px 30px;
+            box-shadow: var(--shadow);
+            max-width: 500px;
+            margin: 0 auto;
+        }
+        
+        .price {
+            font-size: 3rem;
+            font-weight: 700;
+            color: var(--primary);
+            margin: 20px 0;
+        }
+        
+        .price span {
+            font-size: 1rem;
+            color: var(--gray);
+        }
+        
+        .benefits {
+            list-style: none;
+            margin: 30px 0;
+            text-align: left;
+        }
+        
+        .benefits li {
+            padding: 10px 0;
+            border-bottom: 1px solid var(--border);
+        }
+        
+        .benefits li:last-child {
+            border-bottom: none;
+        }
+        
+        .benefits li i {
+            color: var(--secondary);
+            margin-right: 10px;
+        }
+        
+        footer {
+            background: var(--dark);
+            color: white;
+            padding: 3rem 0 2rem;
+        }
+        
+        .footer-content {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 30px;
+            margin-bottom: 30px;
+        }
+        
+        .footer-column h3 {
+            margin-bottom: 20px;
+            font-size: 1.3rem;
+        }
+        
+        .footer-links {
+            list-style: none;
+        }
+        
+        .footer-links li {
+            margin-bottom: 10px;
+        }
+        
+        .footer-links a {
+            color: #cbd5e1;
+            text-decoration: none;
+            transition: color 0.3s;
+        }
+        
+        .footer-links a:hover {
+            color: white;
+        }
+        
+        .copyright {
+            text-align: center;
+            padding-top: 20px;
+            border-top: 1px solid #334155;
+            color: #94a3b8;
+        }
+        
+        /* Mobile Responsiveness */
+        @media (max-width: 768px) {
+            .hero h1 {
+                font-size: 2rem;
+            }
+            
+            .hero p {
+                font-size: 1rem;
+            }
+            
+            .btn {
+                display: block;
+                width: 100%;
+                margin-bottom: 15px;
+            }
+            
+            .btn-outline {
+                margin-left: 0;
+            }
+            
+            .nav-links {
+                display: none;
+                position: absolute;
+                top: 70px;
+                left: 0;
+                right: 0;
+                background: var(--primary);
+                flex-direction: column;
+                padding: 20px;
+                gap: 10px;
+            }
+            
+            .nav-links.active {
+                display: flex;
+            }
+            
+            .mobile-menu-btn {
+                display: block;
+            }
+            
+            .input-row {
+                flex-direction: column;
+                gap: 0;
+            }
+        }
+        
+        /* PWA Install Prompt */
+        .pwa-install {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            background: white;
+            border-radius: 10px;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.15);
+            padding: 20px;
+            max-width: 350px;
+            z-index: 1000;
+            display: none;
+        }
+        
+        .pwa-install.show {
+            display: block;
+        }
+        
+        .pwa-install .close {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            background: none;
+            border: none;
+            font-size: 1.2rem;
+            cursor: pointer;
+            color: var(--gray);
+        }
+        
+        /* Admin Page Styles */
+        .admin-login {
+            max-width: 500px;
+            margin: 100px auto;
+            padding: 30px;
+            background: white;
+            border-radius: 10px;
+            box-shadow: var(--shadow);
+        }
+        
+        .admin-login h2 {
+            text-align: center;
+            margin-bottom: 30px;
+            color: var(--primary);
+        }
+        
+        .admin-content {
+            max-width: 1200px;
+            margin: 50px auto;
+            padding: 0 20px;
+            display: none;
+        }
+        
+        .user-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 20px;
+            background: white;
+            box-shadow: var(--shadow);
+            border-radius: 10px;
+            overflow: hidden;
+        }
+        
+        .user-table th, 
+        .user-table td {
+            padding: 15px;
+            text-align: left;
+            border-bottom: 1px solid var(--border);
+        }
+        
+        .user-table th {
+            background: var(--primary);
+            color: white;
+        }
+        
+        .user-table tr:last-child td {
+            border-bottom: none;
+        }
+        
+        .user-table tr:hover {
+            background: #f8fafc;
+        }
+    </style>
+</head>
+<body>
+    <!-- Landing Page -->
+    <div id="landing-page">
+        <header>
+            <div class="container">
+                <nav>
+                    <div class="logo">
+                        <i class="fas fa-chart-line"></i>
+                        <span>PipProfit</span>
+                    </div>
+                    <div class="nav-links" id="navLinks">
+                        <a href="#features">Features</a>
+                        <a href="#calculator">Calculator</a>
+                        <a href="#pricing">Pricing</a>
+                    </div>
+                    <button class="mobile-menu-btn" id="menuBtn">
+                        <i class="fas fa-bars"></i>
+                    </button>
+                </nav>
+            </div>
+        </header>
+
+        <section class="hero">
+            <div class="container">
+                <h1>Calculate Your Forex Profits with Precision</h1>
+                <p>PipProfit helps traders instantly calculate potential profit or loss for any Forex trade. Perfect for both beginners and experienced traders.</p>
+                <a href="#pricing" class="btn">Get Started</a>
+                <a href="#calculator" class="btn btn-outline">Try Demo</a>
+            </div>
+        </section>
+
+        <section class="features" id="features">
+            <div class="container">
+                <h2 class="section-title">Powerful Features</h2>
+                <div class="features-grid">
+                    <div class="feature-card">
+                        <div class="feature-icon">
+                            <i class="fas fa-calculator"></i>
+                        </div>
+                        <h3>Instant Calculation</h3>
+                        <p>Enter your trade details and get instant profit/loss calculations in USD with our advanced algorithm.</p>
+                    </div>
+                    <div class="feature-card">
+                        <div class="feature-icon">
+                            <i class="fas fa-mobile-alt"></i>
+                        </div>
+                        <h3>Mobile Optimized</h3>
+                        <p>Trade on the go with our responsive design that works perfectly on any device.</p>
+                    </div>
+                    <div class="feature-card">
+                        <div class="feature-icon">
+                            <i class="fas fa-history"></i>
+                        </div>
+                        <h3>Trade History</h3>
+                        <p>Save and review your past calculations to improve your trading strategy.</p>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section class="calculator" id="calculator">
+            <div class="container">
+                <h2 class="section-title">Forex Profit Calculator</h2>
+                <div class="calculator-container">
+                    <div class="input-group">
+                        <label for="lotSize">Lot Size</label>
+                        <input type="number" id="lotSize" placeholder="Enter lot size (e.g., 0.1, 1.0)" step="0.01" min="0.01">
+                    </div>
+                    
+                    <div class="input-row">
+                        <div class="input-group">
+                            <label for="entryPrice">Entry Price</label>
+                            <input type="number" id="entryPrice" placeholder="Entry price (e.g., 1.2345)" step="0.0001" min="0">
+                        </div>
+                        <div class="input-group">
+                            <label for="exitPrice">Exit Price</label>
+                            <input type="number" id="exitPrice" placeholder="Exit price (e.g., 1.2456)" step="0.0001" min="0">
+                        </div>
+                    </div>
+                    
+                    <div class="input-group">
+                        <label for="currencyPair">Currency Pair</label>
+                        <select id="currencyPair">
+                            <option value="EUR/USD">EUR/USD</option>
+                            <option value="GBP/USD">GBP/USD</option>
+                            <option value="USD/JPY">USD/JPY</option>
+                            <option value="AUD/USD">AUD/USD</option>
+                            <option value="USD/CAD">USD/CAD</option>
+                            <option value="NZD/USD">NZD/USD</option>
+                            <option value="USD/CHF">USD/CHF</option>
+                        </select>
+                    </div>
+                    
+                    <button class="btn" style="width: 100%;" id="calculateBtn">Calculate Profit/Loss</button>
+                    
+                    <div class="result" id="result" style="display: none;">
+                        <h3>Estimated Profit/Loss</h3>
+                        <div class="profit-amount" id="profitAmount">$0.00</div>
+                        <p id="resultDetails">The estimated profit/loss for your trade</p>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section class="pricing" id="pricing">
+            <div class="container">
+                <h2 class="section-title">Unlock Full Features</h2>
+                <div class="pricing-card">
+                    <h3>Premium Access</h3>
+                    <p>Unlock unlimited calculations, save trade history, and get advanced features</p>
+                    <div class="price">$9.99 <span>/month</span></div>
+                    
+                    <ul class="benefits">
+                        <li><i class="fas fa-check-circle"></i> Unlimited profit calculations</li>
+                        <li><i class="fas fa-check-circle"></i> Save and review trade history</li>
+                        <li><i class="fas fa-check-circle"></i> Multiple currency pairs</li>
+                        <li><i class="fas fa-check-circle"></i> Advanced risk management tools</li>
+                        <li><i class="fas fa-check-circle"></i> Priority support</li>
+                    </ul>
+                    
+                    <!-- Paystack Payment Button -->
+                    <button class="btn" id="paystackButton" style="width: 100%;">
+                        <i class="fas fa-lock"></i> Subscribe with Paystack
+                    </button>
+                    <p style="margin-top: 15px; font-size: 0.9rem;">Secure payment powered by Paystack</p>
+                </div>
+            </div>
+        </section>
+
+        <footer>
+            <div class="container">
+                <div class="footer-content">
+                    <div class="footer-column">
+                        <h3>PipProfit</h3>
+                        <p>Advanced Forex profit calculator for traders who demand precision and efficiency.</p>
+                    </div>
+                    <div class="footer-column">
+                        <h3>Quick Links</h3>
+                        <ul class="footer-links">
+                            <li><a href="#features">Features</a></li>
+                            <li><a href="#calculator">Calculator</a></li>
+                            <li><a href="#pricing">Pricing</a></li>
+                        </ul>
+                    </div>
+                    <div class="footer-column">
+                        <h3>Legal</h3>
+                        <ul class="footer-links">
+                            <li><a href="#">Privacy Policy</a></li>
+                            <li><a href="#">Terms of Service</a></li>
+                        </ul>
+                    </div>
+                </div>
+                <div class="copyright">
+                    &copy; 2023 PipProfit. All rights reserved.
+                </div>
+            </div>
+        </footer>
+    </div>
+    
+    <!-- Admin Page (Hidden by default) -->
+    <div id="admin-page" style="display: none;">
+        <div class="admin-login" id="adminLogin">
+            <h2>Admin Login</h2>
+            <div class="input-group">
+                <label for="adminPassword">Password</label>
+                <input type="password" id="adminPassword" placeholder="Enter admin password">
+            </div>
+            <button class="btn" style="width: 100%;" id="loginBtn">Login</button>
+            <p id="loginError" style="color: #ef4444; margin-top: 15px; text-align: center; display: none;">Incorrect password. Please try again.</p>
+        </div>
+        
+        <div class="admin-content" id="adminContent">
+            <div class="container">
+                <h2 class="section-title">Admin Dashboard</h2>
+                <p>Welcome to the PipProfit admin dashboard. Here you can view user activity and manage subscriptions.</p>
+                
+                <div class="input-group" style="max-width: 300px; margin-left: auto;">
+                    <input type="text" id="searchUsers" placeholder="Search users...">
+                </div>
+                
+                <table class="user-table">
+                    <thead>
+                        <tr>
+                            <th>ID</th>
+                            <th>Name</th>
+                            <th>Email</th>
+                            <th>Subscription</th>
+                            <th>Join Date</th>
+                        </tr>
+                    </thead>
+                    <tbody id="userTableBody">
+                        <!-- Users will be populated here -->
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+    
+    <!-- PWA Install Prompt -->
+    <div class="pwa-install" id="pwaInstall">
+        <button class="close" id="closePwa">&times;</button>
+        <h3>Install PipProfit App</h3>
+        <p>Add PipProfit to your home screen for easy access and offline use.</p>
+        <button class="btn" id="installBtn" style="width: 100%; margin-top: 15px;">Install Now</button>
+    </div>
+
+    <script>
+        // DOM Elements
+        const menuBtn = document.getElementById('menuBtn');
+        const navLinks = document.getElementById('navLinks');
+        const calculateBtn = document.getElementById('calculateBtn');
+        const result = document.getElementById('result');
+        const profitAmount = document.getElementById('profitAmount');
+        const resultDetails = document.getElementById('resultDetails');
+        const paystackButton = document.getElementById('paystackButton');
+        const loginBtn = document.getElementById('loginBtn');
+        const adminPassword = document.getElementById('adminPassword');
+        const loginError = document.getElementById('loginError');
+        const adminContent = document.getElementById('adminContent');
+        const landingPage = document.getElementById('landing-page');
+        const adminPage = document.getElementById('admin-page');
+        const userTableBody = document.getElementById('userTableBody');
+        const pwaInstall = document.getElementById('pwaInstall');
+        const installBtn = document.getElementById('installBtn');
+        const closePwa = document.getElementById('closePwa');
+        
+        // Toggle mobile menu
+        menuBtn.addEventListener('click', () => {
+            navLinks.classList.toggle('active');
+        });
+        
+        // Close mobile menu when clicking a link
+        document.querySelectorAll('.nav-links a').forEach(link => {
+            link.addEventListener('click', () => {
+                navLinks.classList.remove('active');
+            });
+        });
+        
+        // Calculate profit/loss
+        calculateBtn.addEventListener('click', () => {
+            const lotSize = parseFloat(document.getElementById('lotSize').value) || 0;
+            const entryPrice = parseFloat(document.getElementById('entryPrice').value) || 0;
+            const exitPrice = parseFloat(document.getElementById('exitPrice').value) || 0;
+            const currencyPair = document.getElementById('currencyPair').value;
+            
+            if (!lotSize || !entryPrice || !exitPrice) {
+                alert('Please fill in all fields');
+                return;
+            }
+            
+            // Simplified calculation (in real app, this would be more complex based on pair)
+            const pipDifference = Math.abs(exitPrice - entryPrice);
+            let pipValue = 10; // Default for XXX/USD pairs
+            const quoteCurrency = currencyPair.split('/')[1];
+            
+            // Adjust calculation for different pair types
+            if (quoteCurrency !== 'USD') {
+                pipValue = 1000; // Approximation for USD/XXX pairs
+            }
+            
+            const profit = (exitPrice > entryPrice ? 1 : -1) * pipDifference * lotSize * pipValue;
+            
+            // Show result
+            profitAmount.textContent = `${profit >= 0 ? '$' : '-$'}${Math.abs(profit).toFixed(2)}`;
+            profitAmount.className = `profit-amount ${profit >= 0 ? '' : 'loss'}`;
+            resultDetails.textContent = `For ${lotSize} lots of ${currencyPair} from ${entryPrice.toFixed(4)} to ${exitPrice.toFixed(4)}`;
+            result.style.display = 'block';
+            
+            // Scroll to results
+            result.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        });
+        
+        // Paystack payment integration
+        paystackButton.addEventListener('click', () => {
+            // In a real implementation, this would open Paystack payment modal
+            alert('Redirecting to Paystack payment... In a real app, this would process payment.');
+            
+            // Simulate successful payment
+            setTimeout(() => {
+                alert('Payment successful! You now have full access to PipProfit.');
+                // Redirect to calculator page in a real app
+                window.location.hash = '#calculator';
+            }, 1500);
+        });
+        
+        // Admin login
+        loginBtn.addEventListener('click', () => {
+            if (adminPassword.value === 'profit123') {
+                adminContent.style.display = 'block';
+                document.getElementById('adminLogin').style.display = 'none';
+            } else {
+                loginError.style.display = 'block';
+            }
+        });
+        
+        // Simulated user data
+        const users = [
+            { id: 1, name: 'John Trader', email: 'john@example.com', subscription: 'Premium', joinDate: '2023-01-15' },
+            { id: 2, name: 'Sarah Forex', email: 'sarah@example.com', subscription: 'Premium', joinDate: '2023-02-20' },
+            { id: 3, name: 'Mike Investor', email: 'mike@example.com', subscription: 'Premium', joinDate: '2023-03-10' },
+            { id: 4, name: 'Emily Stocks', email: 'emily@example.com', subscription: 'Basic', joinDate: '2023-04-05' },
+            { id: 5, name: 'David Exchange', email: 'david@example.com', subscription: 'Premium', joinDate: '2023-05-18' }
+        ];
+        
+        // Populate user table
+        function populateUserTable() {
+            userTableBody.innerHTML = '';
+            users.forEach(user => {
+                const row = document.createElement('tr');
+                row.innerHTML = `
+                    <td>${user.id}</td>
+                    <td>${user.name}</td>
+                    <td>${user.email}</td>
+                    <td>${user.subscription}</td>
+                    <td>${user.joinDate}</td>
+                `;
+                userTableBody.appendChild(row);
+            });
+        }
+        
+        // Check if URL has admin parameter
+        if (window.location.search.includes('admin')) {
+            landingPage.style.display = 'none';
+            adminPage.style.display = 'block';
+            populateUserTable();
+        }
+        
+        // PWA Installation Prompt
+        let deferredPrompt;
+        
+        window.addEventListener('beforeinstallprompt', (e) => {
+            // Prevent the mini-infobar from appearing on mobile
+            e.preventDefault();
+            // Stash the event so it can be triggered later
+            deferredPrompt = e;
+            // Show the install button
+            setTimeout(() => {
+                pwaInstall.classList.add('show');
+            }, 3000);
+        });
+        
+        installBtn.addEventListener('click', async () => {
+            if (!deferredPrompt) return;
+            
+            // Show the install prompt
+            deferredPrompt.prompt();
+            // Wait for the user to respond to the prompt
+            const { outcome } = await deferredPrompt.userChoice;
+            
+            if (outcome === 'accepted') {
+                console.log('User accepted the install prompt');
+            } else {
+                console.log('User dismissed the install prompt');
+            }
+            // We no longer need the prompt. Clear it up.
+            deferredPrompt = null;
+            // Hide the install button
+            pwaInstall.classList.remove('show');
+        });
+        
+        closePwa.addEventListener('click', () => {
+            pwaInstall.classList.remove('show');
+        });
+        
+        // Service Worker Registration
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', () => {
+                navigator.serviceWorker.register('/sw.js')
+                .then(registration => {
+                    console.log('Service Worker registered: ', registration);
+                })
+                .catch(error => {
+                    console.log('Service Worker registration failed: ', error);
+                });
+            });
+        }
+    </script>
+</body>
+</html>
