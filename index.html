@@ -703,6 +703,100 @@
             font-size: 1.5rem;
             color: var(--secondary);
         }
+        
+        /* Modal Styles */
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.7);
+            z-index: 2000;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+        
+        .modal.show {
+            display: flex;
+            animation: fadeIn 0.3s ease;
+        }
+        
+        @keyframes fadeIn {
+            from { opacity: 0; }
+            to { opacity: 1; }
+        }
+        
+        .modal-content {
+            background: white;
+            border-radius: 12px;
+            width: 100%;
+            max-width: 500px;
+            padding: 30px;
+            position: relative;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+        }
+        
+        .modal-close {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            background: transparent;
+            border: none;
+            font-size: 24px;
+            color: var(--gray);
+            cursor: pointer;
+        }
+        
+        .modal-header {
+            margin-bottom: 25px;
+            text-align: center;
+        }
+        
+        .modal-header h2 {
+            color: var(--primary);
+            margin-bottom: 10px;
+        }
+        
+        .payment-form .input-group {
+            margin-bottom: 20px;
+        }
+        
+        .payment-form label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: 500;
+        }
+        
+        .payment-form input {
+            width: 100%;
+            padding: 12px 15px;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            font-size: 1rem;
+        }
+        
+        .plan-display {
+            padding: 15px;
+            background: #f8fafc;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            text-align: center;
+        }
+        
+        .plan-name {
+            font-size: 1.3rem;
+            font-weight: 700;
+            color: var(--primary);
+            margin-bottom: 5px;
+        }
+        
+        .plan-price {
+            font-size: 1.1rem;
+            color: var(--dark);
+        }
     </style>
 </head>
 <body>
@@ -1035,9 +1129,17 @@
     <div class="modal" id="paymentModal">
         <div class="modal-content">
             <button class="modal-close" id="modalClose">&times;</button>
-            <h2 style="text-align: center; margin-bottom: 20px;">Complete Your Payment</h2>
+            <div class="modal-header">
+                <h2>Complete Your Payment</h2>
+                <p>Secure payment powered by Paystack</p>
+            </div>
             
             <form class="payment-form" id="paymentForm">
+                <div class="plan-display">
+                    <div class="plan-name" id="selectedPlan">Professional Plan</div>
+                    <div class="plan-price" id="planPrice">₦1,500 monthly</div>
+                </div>
+                
                 <div class="input-group">
                     <label for="email">Email Address</label>
                     <input type="email" id="email" placeholder="Your email address" required>
@@ -1051,14 +1153,6 @@
                 <div class="input-group">
                     <label for="phone">Phone Number</label>
                     <input type="tel" id="phone" placeholder="Your phone number">
-                </div>
-                
-                <div class="input-group">
-                    <label>Subscription Plan</label>
-                    <div style="padding: 12px 15px; border: 1px solid var(--border); border-radius: 8px; background: #f8fafc;">
-                        <strong id="selectedPlan">Professional Plan</strong>
-                        <div id="planPrice">₦1,500 monthly</div>
-                    </div>
                 </div>
                 
                 <button type="button" class="btn btn-premium" id="processPayment" style="width: 100%;">
@@ -1089,487 +1183,506 @@
     </div>
 
     <script>
-        // DOM Elements
-        const menuBtn = document.getElementById('menuBtn');
-        const navLinks = document.getElementById('navLinks');
-        const calculateBtn = document.getElementById('calculateBtn');
-        const result = document.getElementById('result');
-        const profitAmount = document.getElementById('profitAmount');
-        const resultDetails = document.getElementById('resultDetails');
-        const paystackButton = document.getElementById('paystackButton');
-        const logoutBtn = document.getElementById('logoutBtn');
-        const landingPage = document.getElementById('landing-page');
-        const adminPage = document.getElementById('admin-page');
-        const adminLink = document.getElementById('adminLink');
-        const userTableBody = document.getElementById('userTableBody');
-        const paymentModal = document.getElementById('paymentModal');
-        const modalClose = document.getElementById('modalClose');
-        const processPayment = document.getElementById('processPayment');
-        const countrySelect = document.getElementById('country');
-        const dynamicPrice = document.getElementById('dynamicPrice');
-        const calculateRR = document.getElementById('calculateRR');
-        const rrCalculator = document.getElementById('rrCalculator');
-        const rrResult = document.getElementById('rrResult');
-        const rrRatio = document.getElementById('rrRatio');
-        const installButton = document.getElementById('installButton');
-        const closePrompt = document.getElementById('closePrompt');
-        const offlineIndicator = document.getElementById('offlineIndicator');
-        const offlineToggle = document.getElementById('offlineToggle');
-        const pwaSettings = document.getElementById('pwaSettings');
-        const insightsContainer = document.getElementById('insightsContainer');
-        const subscriptionStatus = document.getElementById('subscriptionStatus');
-        const subscriptionBadge = document.getElementById('subscriptionBadge');
-        const renewalDate = document.getElementById('renewalDate');
-        const manageSubscription = document.getElementById('manageSubscription');
-        const selectedPlan = document.getElementById('selectedPlan');
-        const planPrice = document.getElementById('planPrice');
-        const currencyPair = document.getElementById('currencyPair');
-        const baseFlag = document.getElementById('baseFlag');
-        const quoteFlag = document.getElementById('quoteFlag');
-        
-        // Check if user is premium
-        let isPremiumUser = localStorage.getItem('premiumUser') === 'true';
-        let subscriptionExpiry = localStorage.getItem('subscriptionExpiry') || 0;
-        
-        // Prices by country
-        const prices = {
-            'NG': { amount: 150000, currency: 'NGN', display: '₦1,500' },
-            'US': { amount: 999, currency: 'USD', display: '$9.99' },
-            'UK': { amount: 799, currency: 'GBP', display: '£7.99' },
-            'EU': { amount: 899, currency: 'EUR', display: '€8.99' },
-            'other': { amount: 999, currency: 'USD', display: '$9.99' }
-        };
-        
-        // Current payment details
-        let currentPayment = prices['NG'];
-        
-        // Initialize the app
-        function initApp() {
-            // Check subscription status
-            checkSubscription();
-            
-            // Set initial price display
-            updatePriceDisplay();
-            
-            // Set initial plan display in payment modal
-            updatePlanDisplay();
-            
-            // Set currency flags
-            updateCurrencyFlags();
-        }
-        
-        // Check subscription status
-        function checkSubscription() {
-            const now = Date.now();
-            const expiry = parseInt(subscriptionExpiry);
-            
-            if (expiry > now) {
-                isPremiumUser = true;
-                localStorage.setItem('premiumUser', 'true');
+        // App Initialization
+        document.addEventListener('DOMContentLoaded', function() {
+            const app = {
+                // DOM Elements
+                menuBtn: document.getElementById('menuBtn'),
+                navLinks: document.getElementById('navLinks'),
+                calculateBtn: document.getElementById('calculateBtn'),
+                result: document.getElementById('result'),
+                profitAmount: document.getElementById('profitAmount'),
+                resultDetails: document.getElementById('resultDetails'),
+                paystackButton: document.getElementById('paystackButton'),
+                logoutBtn: document.getElementById('logoutBtn'),
+                landingPage: document.getElementById('landing-page'),
+                adminPage: document.getElementById('admin-page'),
+                adminLink: document.getElementById('adminLink'),
+                userTableBody: document.getElementById('userTableBody'),
+                paymentModal: document.getElementById('paymentModal'),
+                modalClose: document.getElementById('modalClose'),
+                processPayment: document.getElementById('processPayment'),
+                countrySelect: document.getElementById('country'),
+                dynamicPrice: document.getElementById('dynamicPrice'),
+                calculateRR: document.getElementById('calculateRR'),
+                rrCalculator: document.getElementById('rrCalculator'),
+                rrResult: document.getElementById('rrResult'),
+                rrRatio: document.getElementById('rrRatio'),
+                installButton: document.getElementById('installButton'),
+                closePrompt: document.getElementById('closePrompt'),
+                offlineIndicator: document.getElementById('offlineIndicator'),
+                offlineToggle: document.getElementById('offlineToggle'),
+                pwaSettings: document.getElementById('pwaSettings'),
+                insightsContainer: document.getElementById('insightsContainer'),
+                subscriptionStatus: document.getElementById('subscriptionStatus'),
+                subscriptionBadge: document.getElementById('subscriptionBadge'),
+                renewalDate: document.getElementById('renewalDate'),
+                manageSubscription: document.getElementById('manageSubscription'),
+                selectedPlan: document.getElementById('selectedPlan'),
+                planPrice: document.getElementById('planPrice'),
+                currencyPair: document.getElementById('currencyPair'),
+                baseFlag: document.getElementById('baseFlag'),
+                quoteFlag: document.getElementById('quoteFlag'),
                 
-                // Show premium features
-                rrCalculator.style.display = 'block';
-                pwaSettings.style.display = 'block';
-                insightsContainer.style.display = 'block';
-                subscriptionStatus.style.display = 'block';
-                
-                // Set renewal date
-                const expiryDate = new Date(expiry);
-                renewalDate.textContent = expiryDate.toLocaleDateString();
-                
-                // Calculate days until renewal
-                const daysLeft = Math.ceil((expiry - now) / (1000 * 60 * 60 * 24));
-                subscriptionBadge.textContent = `Active (${daysLeft} days left)`;
-            } else if (expiry > 0) {
-                // Subscription expired
-                subscriptionStatus.style.display = 'block';
-                subscriptionBadge.textContent = "Expired";
-                subscriptionBadge.classList.add('status-expired');
-                isPremiumUser = false;
-                localStorage.setItem('premiumUser', 'false');
-            }
-        }
-        
-        // Update price display based on country selection
-        function updatePriceDisplay() {
-            const country = countrySelect.value;
-            currentPayment = prices[country];
-            dynamicPrice.textContent = currentPayment.display;
-        }
-        
-        // Update plan display in payment modal
-        function updatePlanDisplay() {
-            selectedPlan.textContent = "Professional Plan";
-            planPrice.textContent = `${currentPayment.display} monthly`;
-        }
-        
-        // Update currency flags
-        function updateCurrencyFlags() {
-            const pair = currencyPair.value;
-            const [base, quote] = pair.split('/');
-            
-            // Set flag sources
-            baseFlag.src = `https://flagcdn.com/16x12/${getCountryCode(base)}.png`;
-            quoteFlag.src = `https://flagcdn.com/16x12/${getCountryCode(quote)}.png`;
-        }
-        
-        // Get country code from currency
-        function getCountryCode(currency) {
-            const codes = {
-                'EUR': 'eu',
-                'USD': 'us',
-                'GBP': 'gb',
-                'JPY': 'jp',
-                'AUD': 'au',
-                'CAD': 'ca',
-                'NZD': 'nz',
-                'CHF': 'ch'
-            };
-            
-            return codes[currency] || 'eu';
-        }
-        
-        // Toggle mobile menu
-        menuBtn.addEventListener('click', () => {
-            navLinks.classList.toggle('active');
-        });
-        
-        // Close mobile menu when clicking a link
-        document.querySelectorAll('.nav-links a').forEach(link => {
-            link.addEventListener('click', () => {
-                navLinks.classList.remove('active');
-            });
-        });
-        
-        // Calculate profit/loss
-        calculateBtn.addEventListener('click', () => {
-            const lotSize = parseFloat(document.getElementById('lotSize').value) || 0;
-            const entryPrice = parseFloat(document.getElementById('entryPrice').value) || 0;
-            const exitPrice = parseFloat(document.getElementById('exitPrice').value) || 0;
-            const currencyPair = document.getElementById('currencyPair').value;
-            
-            if (!lotSize || !entryPrice || !exitPrice) {
-                alert('Please fill in all fields');
-                return;
-            }
-            
-            // Simplified calculation
-            const pipDifference = Math.abs(exitPrice - entryPrice);
-            let pipValue = 10; // Default for XXX/USD pairs
-            const quoteCurrency = currencyPair.split('/')[1];
-            
-            // Adjust calculation for different pair types
-            if (quoteCurrency !== 'USD') {
-                pipValue = 1000; // Approximation for USD/XXX pairs
-            }
-            
-            const profit = (exitPrice > entryPrice ? 1 : -1) * pipDifference * lotSize * pipValue;
-            
-            // Show result
-            profitAmount.textContent = `${profit >= 0 ? '$' : '-$'}${Math.abs(profit).toFixed(2)}`;
-            profitAmount.className = `profit-amount ${profit >= 0 ? '' : 'loss'}`;
-            resultDetails.textContent = `For ${lotSize} lots of ${currencyPair} from ${entryPrice.toFixed(4)} to ${exitPrice.toFixed(4)}`;
-            result.style.display = 'block';
-            
-            // Scroll to results
-            result.scrollIntoView({ behavior: 'smooth', block: 'center' });
-            
-            // Show insights for premium users
-            if (isPremiumUser) {
-                insightsContainer.style.display = 'block';
-            }
-        });
-        
-        // Calculate Risk Reward Ratio
-        calculateRR.addEventListener('click', () => {
-            const risk = parseFloat(document.getElementById('riskAmount').value) || 0;
-            const reward = parseFloat(document.getElementById('rewardAmount').value) || 0;
-            
-            if (risk <= 0 || reward <= 0) {
-                alert('Please enter valid amounts');
-                return;
-            }
-            
-            const ratio = reward / risk;
-            rrRatio.textContent = ratio.toFixed(2);
-            rrResult.style.display = 'block';
-        });
-        
-        // Open payment modal
-        paystackButton.addEventListener('click', () => {
-            updatePlanDisplay();
-            paymentModal.style.display = 'flex';
-        });
-        
-        // Close payment modal
-        modalClose.addEventListener('click', () => {
-            paymentModal.style.display = 'none';
-        });
-        
-        // Process payment with Paystack
-        processPayment.addEventListener('click', () => {
-            const email = document.getElementById('email').value;
-            const name = document.getElementById('name').value;
-            
-            if (!email || !name) {
-                alert('Please fill in all required fields');
-                return;
-            }
-            
-            // Close modal
-            paymentModal.style.display = 'none';
-            
-            // Process payment with Paystack
-            const handler = PaystackPop.setup({
-                key: 'pk_test_1f759a668641f37cd1b315c1d9cfa5c01ec2f202',
-                email: email,
-                amount: currentPayment.amount,
-                currency: currentPayment.currency,
-                ref: 'PP' + Date.now(),
-                metadata: {
-                    custom_fields: [
-                        { display_name: "Full Name", variable_name: "full_name", value: name }
-                    ]
+                // App State
+                isPremiumUser: localStorage.getItem('premiumUser') === 'true',
+                subscriptionExpiry: localStorage.getItem('subscriptionExpiry') || 0,
+                prices: {
+                    'NG': { amount: 150000, currency: 'NGN', display: '₦1,500' },
+                    'US': { amount: 999, currency: 'USD', display: '$9.99' },
+                    'UK': { amount: 799, currency: 'GBP', display: '£7.99' },
+                    'EU': { amount: 899, currency: 'EUR', display: '€8.99' },
+                    'other': { amount: 999, currency: 'USD', display: '$9.99' }
                 },
-                callback: function(response) {
-                    // Payment successful! Activate premium
-                    activatePremium();
-                    
-                    // Show success message
-                    alert('Payment successful! Premium features are now unlocked.');
-                    
-                    // Redirect to calculator
-                    window.location.hash = '#calculator';
-                },
-                onClose: function() {
-                    alert('Payment was not completed. You can try again later.');
-                }
-            });
-            
-            handler.openIframe();
-        });
-        
-        // Activate premium subscription
-        function activatePremium() {
-            // Set subscription to 30 days from now
-            const expiryDate = Date.now() + 30 * 24 * 60 * 60 * 1000;
-            subscriptionExpiry = expiryDate.toString();
-            
-            localStorage.setItem('premiumUser', 'true');
-            localStorage.setItem('subscriptionExpiry', subscriptionExpiry);
-            
-            isPremiumUser = true;
-            checkSubscription();
-        }
-        
-        // Manage subscription
-        manageSubscription.addEventListener('click', () => {
-            window.location.hash = '#pricing';
-        });
-        
-        // Country selector change
-        countrySelect.addEventListener('change', updatePriceDisplay);
-        
-        // Currency pair change
-        currencyPair.addEventListener('change', updateCurrencyFlags);
-        
-        // Admin login
-        adminLink.addEventListener('click', (e) => {
-            e.preventDefault();
-            const password = prompt('Enter admin password:');
-            if (password === 'profit123') {
-                landingPage.style.display = 'none';
-                adminPage.style.display = 'block';
-                populateUserTable();
-            } else {
-                alert('Incorrect password');
-            }
-        });
-        
-        // Logout from admin
-        logoutBtn.addEventListener('click', () => {
-            landingPage.style.display = 'block';
-            adminPage.style.display = 'none';
-        });
-        
-        // Simulated user data
-        const users = [
-            { id: 1, name: 'John Trader', email: 'john@gmail.com', subscription: 'Premium', payment: '₦1,500', renewal: '2023-12-15' },
-            { id: 2, name: 'Sarah Forex', email: 'sarah@gmail.com', subscription: 'Premium', payment: '$9.99', renewal: '2023-12-20' },
-            { id: 3, name: 'Mike Investor', email: 'mike@gmail.com', subscription: 'Premium', payment: '£7.99', renewal: '2023-12-10' },
-            { id: 4, name: 'Emily Stocks', email: 'emily@gmail.com', subscription: 'Basic', payment: 'Free', renewal: '-' },
-            { id: 5, name: 'David Exchange', email: 'david@gmail.com', subscription: 'Premium', payment: '€8.99', renewal: '2023-12-18' }
-        ];
-        
-        // Populate user table
-        function populateUserTable() {
-            userTableBody.innerHTML = '';
-            users.forEach(user => {
-                const row = document.createElement('tr');
-                row.innerHTML = `
-                    <td>${user.id}</td>
-                    <td>${user.name}</td>
-                    <td>${user.email}</td>
-                    <td>${user.subscription}</td>
-                    <td>${user.payment}</td>
-                    <td>${user.renewal}</td>
-                `;
-                userTableBody.appendChild(row);
-            });
-        }
-        
-        // =====================
-        // PWA Functionality
-        // =====================
-        function setupPWA() {
-            const installPrompt = document.getElementById('installPrompt');
-            
-            let deferredPrompt;
-            
-            // Listen for beforeinstallprompt event
-            window.addEventListener('beforeinstallprompt', (e) => {
-                e.preventDefault();
-                deferredPrompt = e;
+                currentPayment: null,
                 
-                // Show the install prompt after 5 seconds
-                setTimeout(() => {
-                    installPrompt.classList.add('show');
-                }, 5000);
-            });
-            
-            // Close prompt
-            closePrompt.addEventListener('click', () => {
-                installPrompt.classList.remove('show');
-            });
-            
-            // Install button handler
-            function installApp() {
-                if (deferredPrompt) {
-                    deferredPrompt.prompt();
-                    deferredPrompt.userChoice.then((choiceResult) => {
-                        if (choiceResult.outcome === 'accepted') {
-                            console.log('User installed PipProfit');
+                // Initialize App
+                init() {
+                    this.checkSubscription();
+                    this.updatePriceDisplay();
+                    this.updatePlanDisplay();
+                    this.updateCurrencyFlags();
+                    this.setupEventListeners();
+                    this.setupPWA();
+                    this.registerServiceWorker();
+                },
+                
+                // Check subscription status
+                checkSubscription() {
+                    const now = Date.now();
+                    const expiry = parseInt(this.subscriptionExpiry);
+                    
+                    if (expiry > now) {
+                        this.isPremiumUser = true;
+                        localStorage.setItem('premiumUser', 'true');
+                        
+                        // Show premium features
+                        this.rrCalculator.style.display = 'block';
+                        this.pwaSettings.style.display = 'block';
+                        this.insightsContainer.style.display = 'block';
+                        this.subscriptionStatus.style.display = 'block';
+                        
+                        // Set renewal date
+                        const expiryDate = new Date(expiry);
+                        this.renewalDate.textContent = expiryDate.toLocaleDateString();
+                        
+                        // Calculate days until renewal
+                        const daysLeft = Math.ceil((expiry - now) / (1000 * 60 * 60 * 24));
+                        this.subscriptionBadge.textContent = `Active (${daysLeft} days left)`;
+                    } else if (expiry > 0) {
+                        // Subscription expired
+                        this.subscriptionStatus.style.display = 'block';
+                        this.subscriptionBadge.textContent = "Expired";
+                        this.subscriptionBadge.classList.add('status-expired');
+                        this.isPremiumUser = false;
+                        localStorage.setItem('premiumUser', 'false');
+                    }
+                },
+                
+                // Update price display based on country selection
+                updatePriceDisplay() {
+                    const country = this.countrySelect.value;
+                    this.currentPayment = this.prices[country];
+                    this.dynamicPrice.textContent = this.currentPayment.display;
+                },
+                
+                // Update plan display in payment modal
+                updatePlanDisplay() {
+                    this.selectedPlan.textContent = "Professional Plan";
+                    this.planPrice.textContent = `${this.currentPayment.display} monthly`;
+                },
+                
+                // Update currency flags
+                updateCurrencyFlags() {
+                    const pair = this.currencyPair.value;
+                    const [base, quote] = pair.split('/');
+                    
+                    // Set flag sources
+                    this.baseFlag.src = `https://flagcdn.com/16x12/${this.getCountryCode(base)}.png`;
+                    this.quoteFlag.src = `https://flagcdn.com/16x12/${this.getCountryCode(quote)}.png`;
+                },
+                
+                // Get country code from currency
+                getCountryCode(currency) {
+                    const codes = {
+                        'EUR': 'eu',
+                        'USD': 'us',
+                        'GBP': 'gb',
+                        'JPY': 'jp',
+                        'AUD': 'au',
+                        'CAD': 'ca',
+                        'NZD': 'nz',
+                        'CHF': 'ch'
+                    };
+                    
+                    return codes[currency] || 'eu';
+                },
+                
+                // Setup Event Listeners
+                setupEventListeners() {
+                    // Toggle mobile menu
+                    this.menuBtn.addEventListener('click', () => {
+                        this.navLinks.classList.toggle('active');
+                    });
+                    
+                    // Close mobile menu when clicking a link
+                    document.querySelectorAll('.nav-links a').forEach(link => {
+                        link.addEventListener('click', () => {
+                            this.navLinks.classList.remove('active');
+                        });
+                    });
+                    
+                    // Calculate profit/loss
+                    this.calculateBtn.addEventListener('click', () => {
+                        this.calculateProfit();
+                    });
+                    
+                    // Calculate Risk Reward Ratio
+                    this.calculateRR.addEventListener('click', () => {
+                        this.calculateRiskReward();
+                    });
+                    
+                    // Open payment modal
+                    this.paystackButton.addEventListener('click', () => {
+                        this.updatePlanDisplay();
+                        this.paymentModal.style.display = 'flex';
+                    });
+                    
+                    // Close payment modal
+                    this.modalClose.addEventListener('click', () => {
+                        this.paymentModal.style.display = 'none';
+                    });
+                    
+                    // Process payment with Paystack
+                    this.processPayment.addEventListener('click', () => {
+                        this.processSubscription();
+                    });
+                    
+                    // Manage subscription
+                    this.manageSubscription.addEventListener('click', () => {
+                        window.location.hash = '#pricing';
+                    });
+                    
+                    // Country selector change
+                    this.countrySelect.addEventListener('change', () => {
+                        this.updatePriceDisplay();
+                    });
+                    
+                    // Currency pair change
+                    this.currencyPair.addEventListener('change', () => {
+                        this.updateCurrencyFlags();
+                    });
+                    
+                    // Admin login
+                    this.adminLink.addEventListener('click', (e) => {
+                        e.preventDefault();
+                        this.adminLogin();
+                    });
+                    
+                    // Logout from admin
+                    this.logoutBtn.addEventListener('click', () => {
+                        this.landingPage.style.display = 'block';
+                        this.adminPage.style.display = 'none';
+                    });
+                },
+                
+                // Calculate profit/loss
+                calculateProfit() {
+                    const lotSize = parseFloat(document.getElementById('lotSize').value) || 0;
+                    const entryPrice = parseFloat(document.getElementById('entryPrice').value) || 0;
+                    const exitPrice = parseFloat(document.getElementById('exitPrice').value) || 0;
+                    const currencyPair = document.getElementById('currencyPair').value;
+                    
+                    if (!lotSize || !entryPrice || !exitPrice) {
+                        alert('Please fill in all fields');
+                        return;
+                    }
+                    
+                    // Simplified calculation
+                    const pipDifference = Math.abs(exitPrice - entryPrice);
+                    let pipValue = 10; // Default for XXX/USD pairs
+                    const quoteCurrency = currencyPair.split('/')[1];
+                    
+                    // Adjust calculation for different pair types
+                    if (quoteCurrency !== 'USD') {
+                        pipValue = 1000; // Approximation for USD/XXX pairs
+                    }
+                    
+                    const profit = (exitPrice > entryPrice ? 1 : -1) * pipDifference * lotSize * pipValue;
+                    
+                    // Show result
+                    this.profitAmount.textContent = `${profit >= 0 ? '$' : '-$'}${Math.abs(profit).toFixed(2)}`;
+                    this.profitAmount.className = `profit-amount ${profit >= 0 ? '' : 'loss'}`;
+                    this.resultDetails.textContent = `For ${lotSize} lots of ${currencyPair} from ${entryPrice.toFixed(4)} to ${exitPrice.toFixed(4)}`;
+                    this.result.style.display = 'block';
+                    
+                    // Scroll to results
+                    this.result.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                    
+                    // Show insights for premium users
+                    if (this.isPremiumUser) {
+                        this.insightsContainer.style.display = 'block';
+                    }
+                },
+                
+                // Calculate Risk Reward Ratio
+                calculateRiskReward() {
+                    const risk = parseFloat(document.getElementById('riskAmount').value) || 0;
+                    const reward = parseFloat(document.getElementById('rewardAmount').value) || 0;
+                    
+                    if (risk <= 0 || reward <= 0) {
+                        alert('Please enter valid amounts');
+                        return;
+                    }
+                    
+                    const ratio = reward / risk;
+                    this.rrRatio.textContent = ratio.toFixed(2);
+                    this.rrResult.style.display = 'block';
+                },
+                
+                // Process subscription payment
+                processSubscription() {
+                    const email = document.getElementById('email').value;
+                    const name = document.getElementById('name').value;
+                    
+                    if (!email || !name) {
+                        alert('Please fill in all required fields');
+                        return;
+                    }
+                    
+                    // Close modal
+                    this.paymentModal.style.display = 'none';
+                    
+                    // Process payment with Paystack
+                    const handler = PaystackPop.setup({
+                        key: 'pk_test_1f759a668641f37cd1b315c1d9cfa5c01ec2f202',
+                        email: email,
+                        amount: this.currentPayment.amount,
+                        currency: this.currentPayment.currency,
+                        ref: 'PP' + Date.now(),
+                        metadata: {
+                            custom_fields: [
+                                { display_name: "Full Name", variable_name: "full_name", value: name }
+                            ]
+                        },
+                        callback: (response) => {
+                            // Payment successful! Activate premium
+                            this.activatePremium();
+                            
+                            // Show success message
+                            alert('Payment successful! Premium features are now unlocked.');
+                            
+                            // Redirect to calculator
+                            window.location.hash = '#calculator';
+                        },
+                        onClose: () => {
+                            alert('Payment was not completed. You can try again later.');
                         }
-                        deferredPrompt = null;
+                    });
+                    
+                    handler.openIframe();
+                },
+                
+                // Activate premium subscription
+                activatePremium() {
+                    // Set subscription to 30 days from now
+                    const expiryDate = Date.now() + 30 * 24 * 60 * 60 * 1000;
+                    this.subscriptionExpiry = expiryDate.toString();
+                    
+                    localStorage.setItem('premiumUser', 'true');
+                    localStorage.setItem('subscriptionExpiry', this.subscriptionExpiry);
+                    
+                    this.isPremiumUser = true;
+                    this.checkSubscription();
+                },
+                
+                // Admin login
+                adminLogin() {
+                    const password = prompt('Enter admin password:');
+                    if (password === 'profit123') {
+                        this.landingPage.style.display = 'none';
+                        this.adminPage.style.display = 'block';
+                        this.populateUserTable();
+                    } else {
+                        alert('Incorrect password');
+                    }
+                },
+                
+                // Populate user table
+                populateUserTable() {
+                    const users = [
+                        { id: 1, name: 'John Trader', email: 'john@gmail.com', subscription: 'Premium', payment: '₦1,500', renewal: '2023-12-15' },
+                        { id: 2, name: 'Sarah Forex', email: 'sarah@gmail.com', subscription: 'Premium', payment: '$9.99', renewal: '2023-12-20' },
+                        { id: 3, name: 'Mike Investor', email: 'mike@gmail.com', subscription: 'Premium', payment: '£7.99', renewal: '2023-12-10' },
+                        { id: 4, name: 'Emily Stocks', email: 'emily@gmail.com', subscription: 'Basic', payment: 'Free', renewal: '-' },
+                        { id: 5, name: 'David Exchange', email: 'david@gmail.com', subscription: 'Premium', payment: '€8.99', renewal: '2023-12-18' }
+                    ];
+                    
+                    this.userTableBody.innerHTML = '';
+                    users.forEach(user => {
+                        const row = document.createElement('tr');
+                        row.innerHTML = `
+                            <td>${user.id}</td>
+                            <td>${user.name}</td>
+                            <td>${user.email}</td>
+                            <td>${user.subscription}</td>
+                            <td>${user.payment}</td>
+                            <td>${user.renewal}</td>
+                        `;
+                        this.userTableBody.appendChild(row);
+                    });
+                },
+                
+                // =====================
+                // PWA Functionality
+                // =====================
+                setupPWA() {
+                    const installPrompt = document.getElementById('installPrompt');
+                    
+                    let deferredPrompt;
+                    
+                    // Listen for beforeinstallprompt event
+                    window.addEventListener('beforeinstallprompt', (e) => {
+                        e.preventDefault();
+                        deferredPrompt = e;
+                        
+                        // Show the install prompt after 5 seconds
+                        setTimeout(() => {
+                            installPrompt.classList.add('show');
+                        }, 5000);
+                    });
+                    
+                    // Close prompt
+                    this.closePrompt.addEventListener('click', () => {
                         installPrompt.classList.remove('show');
                     });
-                }
-            }
-            
-            // Add event listeners to install buttons
-            if (installButton) installButton.addEventListener('click', installApp);
-            
-            // Track app installed event
-            window.addEventListener('appinstalled', () => {
-                console.log('PipProfit was installed successfully');
-                installPrompt.classList.remove('show');
-            });
-            
-            // Offline detection
-            window.addEventListener('offline', () => {
-                offlineIndicator.classList.add('show');
-            });
-            
-            window.addEventListener('online', () => {
-                offlineIndicator.classList.remove('show');
-            });
-            
-            // Initialize offline status
-            if (!navigator.onLine) {
-                offlineIndicator.classList.add('show');
-            }
-            
-            // Offline toggle functionality
-            if (offlineToggle) {
-                offlineToggle.addEventListener('change', function() {
-                    if (this.checked) {
-                        localStorage.setItem('offlineEnabled', 'true');
-                        alert('Offline mode enabled. Calculator will work without internet.');
-                    } else {
-                        localStorage.setItem('offlineEnabled', 'false');
+                    
+                    // Install button handler
+                    this.installApp = () => {
+                        if (deferredPrompt) {
+                            deferredPrompt.prompt();
+                            deferredPrompt.userChoice.then((choiceResult) => {
+                                if (choiceResult.outcome === 'accepted') {
+                                    console.log('User installed PipProfit');
+                                }
+                                deferredPrompt = null;
+                                installPrompt.classList.remove('show');
+                            });
+                        }
                     }
-                });
+                    
+                    // Add event listeners to install buttons
+                    if (this.installButton) this.installButton.addEventListener('click', this.installApp);
+                    
+                    // Track app installed event
+                    window.addEventListener('appinstalled', () => {
+                        console.log('PipProfit was installed successfully');
+                        installPrompt.classList.remove('show');
+                    });
+                    
+                    // Offline detection
+                    window.addEventListener('offline', () => {
+                        this.offlineIndicator.classList.add('show');
+                    });
+                    
+                    window.addEventListener('online', () => {
+                        this.offlineIndicator.classList.remove('show');
+                    });
+                    
+                    // Initialize offline status
+                    if (!navigator.onLine) {
+                        this.offlineIndicator.classList.add('show');
+                    }
+                    
+                    // Offline toggle functionality
+                    if (this.offlineToggle) {
+                        this.offlineToggle.addEventListener('change', function() {
+                            if (this.checked) {
+                                localStorage.setItem('offlineEnabled', 'true');
+                                alert('Offline mode enabled. Calculator will work without internet.');
+                            } else {
+                                localStorage.setItem('offlineEnabled', 'false');
+                            }
+                        });
+                        
+                        // Initialize offline toggle state
+                        if (localStorage.getItem('offlineEnabled') === 'true') {
+                            this.offlineToggle.checked = true;
+                        }
+                    }
+                },
                 
-                // Initialize offline toggle state
-                if (localStorage.getItem('offlineEnabled') === 'true') {
-                    offlineToggle.checked = true;
-                }
-            }
-        }
-        
-        // Register Service Worker
-        function registerServiceWorker() {
-            if ('serviceWorker' in navigator) {
-                const swUrl = createServiceWorker();
+                // Register Service Worker
+                registerServiceWorker() {
+                    if ('serviceWorker' in navigator) {
+                        const swUrl = this.createServiceWorker();
+                        
+                        navigator.serviceWorker.register(swUrl).then(registration => {
+                            console.log('ServiceWorker registered with scope: ', registration.scope);
+                        }).catch(err => {
+                            console.log('ServiceWorker registration failed: ', err);
+                        });
+                    }
+                },
                 
-                navigator.serviceWorker.register(swUrl).then(registration => {
-                    console.log('ServiceWorker registered with scope: ', registration.scope);
-                }).catch(err => {
-                    console.log('ServiceWorker registration failed: ', err);
-                });
-            }
-        }
-        
-        // Service Worker Code (as Blob)
-        function createServiceWorker() {
-            const serviceWorkerCode = `
-                // Cache name
-                const CACHE_NAME = 'pipprofit-v1';
-                
-                // Files to cache
-                const urlsToCache = [
-                    '/',
-                    '/index.html',
-                    '/style.css',
-                    '/app.js',
-                    '/manifest.json',
-                    'https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css',
-                    'https://js.paystack.co/v1/inline.js'
-                ];
-                
-                // Install event
-                self.addEventListener('install', event => {
-                    event.waitUntil(
-                        caches.open(CACHE_NAME)
-                            .then(cache => cache.addAll(urlsToCache))
-                    );
-                });
-                
-                // Fetch event
-                self.addEventListener('fetch', event => {
-                    event.respondWith(
-                        caches.match(event.request)
-                            .then(response => response || fetch(event.request))
-                    );
-                });
-                
-                // Activate event
-                self.addEventListener('activate', event => {
-                    const cacheWhitelist = [CACHE_NAME];
-                    event.waitUntil(
-                        caches.keys().then(cacheNames => {
-                            return Promise.all(
-                                cacheNames.map(cacheName => {
-                                    if (cacheWhitelist.indexOf(cacheName) === -1) {
-                                        return caches.delete(cacheName);
-                                    }
+                // Service Worker Code (as Blob)
+                createServiceWorker() {
+                    const serviceWorkerCode = `
+                        // Cache name
+                        const CACHE_NAME = 'pipprofit-v1';
+                        
+                        // Files to cache
+                        const urlsToCache = [
+                            '/',
+                            '/index.html',
+                            '/style.css',
+                            '/app.js',
+                            '/manifest.json',
+                            'https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css',
+                            'https://js.paystack.co/v1/inline.js'
+                        ];
+                        
+                        // Install event
+                        self.addEventListener('install', event => {
+                            event.waitUntil(
+                                caches.open(CACHE_NAME)
+                                    .then(cache => cache.addAll(urlsToCache))
+                            );
+                        });
+                        
+                        // Fetch event
+                        self.addEventListener('fetch', event => {
+                            event.respondWith(
+                                caches.match(event.request)
+                                    .then(response => response || fetch(event.request))
+                            );
+                        });
+                        
+                        // Activate event
+                        self.addEventListener('activate', event => {
+                            const cacheWhitelist = [CACHE_NAME];
+                            event.waitUntil(
+                                caches.keys().then(cacheNames => {
+                                    return Promise.all(
+                                        cacheNames.map(cacheName => {
+                                            if (cacheWhitelist.indexOf(cacheName) === -1) {
+                                                return caches.delete(cacheName);
+                                            }
+                                        })
+                                    );
                                 })
                             );
-                        })
-                    );
-                });
-            `;
+                        });
+                    `;
+                    
+                    // Create a Blob from the service worker code
+                    const blob = new Blob([serviceWorkerCode], { type: 'application/javascript' });
+                    return URL.createObjectURL(blob);
+                }
+            };
             
-            // Create a Blob from the service worker code
-            const blob = new Blob([serviceWorkerCode], { type: 'application/javascript' });
-            return URL.createObjectURL(blob);
-        }
-        
-        // Initialize the app
-        document.addEventListener('DOMContentLoaded', function() {
-            initApp();
-            setupPWA();
-            registerServiceWorker();
+            // Initialize the app
+            app.init();
         });
     </script>
 </body>
