@@ -3,8 +3,15 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>PipProfit - Forex Profit Calculator</title>
-    <link rel="manifest" href="/manifest.json">
+    <title>PipProfit Pro - Advanced Forex Calculator</title>
+    
+    <!-- PWA Manifest and Metadata -->
+    <meta name="theme-color" content="#2563eb">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <link rel="apple-touch-icon" href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA1MTIgNTEyIiBmaWxsPSIjMjU2M2ViIj48cGF0aCBkPSJNMTg0IDBjMzAuOSAwIDU2IDI1LjEgNTYgNTZ2Ni40YzAgMTMuMy0xMC43IDI0LTI0IDI0Yy0zLjQgMC02LjYtLjctOS42LTJjLTcuNCAxMC45LTE5LjIgMTgtMzIuNCAxOHMtMjUtNy4xLTMyLjQtMThjLTMgLjktNi4yIDEuNC05LjYgMS40Yy0xMy4zIDAtMjQtMTAuNy0yNC0yNFY1NmMwLTMwLjkgMjUuMS01NiA1Ni01NnptNTYgMTIwYzAtMTMuMyAxMC43LTI0IDI0LTI0YzMuNCAwIDYuNi43IDkuNiAyYzcuNC0xMC45IDE5LjItMTggMzIuNC0xOHMyNSA3LjEgMzIuNCAxOGMzLS45IDYuMi0xLjQgOS42LTEuNGMxMy4zIDAgMjQgMTAuNyAyNCAyNHY2LjRjMCAzMC45LTI1LjEgNTYtNTYgNTZjLTMwLjkgMC01Ni0yNS4xLTU2LTU2di02LjRjMC0xMy4zIDEwLjctMjQgMjQtMjRjMTMuMyAwIDI0IDEwLjcgMjQgMjR2MjRjMCAzNS4zLTI4LjcgNjQtNjQgNjRIMjI0djY0aDMyYzE3LjcgMCAzMiAxNC4zIDMyIDMydjMyYzAgMTcuNy0xNC4zIDMyLTMyIDMySDE5MmMtMTcuNyAwLTMyLTE0LjMtMzItMzJWMzg0YzAtMTcuNyAxNC4zLTMyIDMyLTMyaDMyVjI4OEgxOTJjLTM1LjMgMC02NC0yOC43LTY0LTY0di0yNGMwLTEzLjMgMTAuNy0yNCAyNC0yNHMyNCAxMC43IDI0IDI0djYuNGMwIDMwLjkgMjUuMSA1NiA1NiA1NmMzMC45IDAgNTYtMjUuMSA1Ni01NnYtNi40YzAtMTMuMy0xMC43LTI0LTI0LTI0Yy0zLjQgMC02LjYuNy05LjYgMmMtNy40LTEwLjktMTkuMi0xOC0zMi40LTE4cy0yNSA3LjEtMzIuNCAxOGMtMy0uOS02LjItMS40LTkuNi0xLjRjLTEzLjMgMC0yNCAxMC43LTI0IDI0djYuNGMwIDMwLjktMjUuMSA1Ni01NiA1NmMtMzAuOSAwLTU2LTI1LjEtNTYtNTZ2LTYuNGMwLTEzLjMgMTAuNy0yNCAyNC0yNGMxMy4zIDAgMjQgMTAuNyAyNCAyNHYyNGMwIDM1LjMgMjguNyA2NCA2NCA2NGg2NHY2NEgxMjhjLTE3LjcgMC0zMiAxNC4zLTMyIDMydjMyYzAgMTcuNyAxNC4zIDMyIDMyIDMyaDY0YzE3LjcgMCAzMi0xNC4zIDMyLTMyVjQ4MGMwLTE3LjctMTQuMy0zMi0zMi0zMkg5NlYzNTJoNjRjMzUuMyAwIDY0LTI4LjcgNjQtNjR2LTI0YzAtMTMuMy0xMC43LTI0LTI0LTI0cy0yNCAxMC43LTI0IDI0djYuNGMwIDMwLjktMjUuMSA1Ni01NiA1NmMtMzAuOSAwLTU2LTI1LjEtNTYtNTZ2LTYuNGMwLTEzLjMgMTAuNy0yNCAyNC0yNGMzLjQgMCA2LjYuNyA5LjYgMmM3LjQtMTAuOSAxOS4yLTE4IDMyLjQtMThzMjUgNy4xIDMyLjQgMThjMy0uOSA2LjItMS40IDkuNi0xLjRjMTMuMyAwIDI0IDEwLjcgMjQgMjR2Ni40YzAgMzAuOSAyNS4xIDU2IDU2IDU2czU2LTI1LjEgNTYtNTZ2LTYuNGMwLTEzLjMtM10uNy0yNC0yNC0yNGMtMy40IDAtNi42LjctOS42IDJjLTcuNC0xMC45LTE5LjItMTgtMzIuNC0xOHMtMjUgNy4xLTMyLjQgMThjLTMtLjktNi4yLTEuNC05LjYtMS40Yy0xMy4zIDAtMjQgMTAuNy0yNCAyNHY2LjRjMCAzMC45LTI1LjEgNTYtNTYgNTZjLTMwLjkgMC01Ni0yNS4xLTU2LTU2VjU2QzAgMjUuMSAyNS4xIDAgNTYgMGgxMjhjMzAuOSAwIDU2IDI1LjEgNTYgNTZ2Ni40YzAgMTMuMy0xMC43IDI0LTI0IDI0Yy0zLjQgMC02LjYtLjctOS42LTJjLTcuNCAxMC45LTE5LjIgMTgtMzIuNCAxOHMtMjUtNy4xLTMyLjQtMThjLTMgLjktNi4yIDEuNC05LjYgMS40Yy0xMy4zIDAtMjQtMTAuNy0yNC0yNFY1NmMwLTMwLjkgMjUuMS01NiA1Ni01NmgxMjh6Ii8+PC9zdmc+">
+    <link rel="manifest" href="data:application/json;base64,ewogICJuYW1lIjogIlBpcFByb2ZpdCIsCiAgInNob3J0X25hbWUiOiAiUGlwUHJvZml0IiwKICAic3RhcnRfdXJsIjogIi4iLAogICJkaXNwbGF5IjogInN0YW5kYWxvbmUiLAogICJ0aGVtZV9jb2xvciI6ICIjMjU2M2ViIiwKICAiYmFja2dyb3VuZF9jb2xvciI6ICIjMGYxNzJhIiwKICAiaWNvbnMiOiBbCiAgICB7CiAgICAgICJzcmMiOiAiZGF0YTppbWFnZS9zdmcreG1sO2Jhc2U2NCxQSE4yWnlCNGJXeHVjejBpYUhSMGNEb3ZMM2QzZHk1M015NXZjbWN2TWpBd01DOXpkbWNpSUhacFpYZENiM2c5SWpBZ01DQXpOVEFnTlRBd0lqNDhjM1I1YkdVK0lEeHdZWFJvSUdacGJHdzlJblZ5YkNnalptbHNkR1Z5TVM0d0xqQXVNQ0F4TURBdU1UWWlQZzBLUEhOMlp5QjRiV3h1Y3owaWFIUjBjRG92TDNkM2R5NTNNeTV2Y21jdk1qQXdNQzl6ZG1jaUlIWnBaWGRDYjNnOUlqQWdNQ0F6TlRBZ05UQXdJajQ4YzNSNWJHVTlJbVpoYkhObExXbHRZV2RsTFdSbGMyTnlhWEIwYVc5dUlqNDhMM04yWno0PSIsCiAgICAgICJzaXplcyI6ICIxOTJ4MTkyIiwKICAgICAgInR5cGUiOiAiaW1hZ2Uvc3ZnK3htbCIKICAgIH0sCiAgICB7CiAgICAgICJzcmMiOiAiZGF0YTppbWFnZS9zdmcreG1sO2Jhc2U2NCxQSE4yWnlCNGJXeHVjejBpYUhSMGNEb3ZMM2QzZHk1M015NXZjbWN2TWpBd01DOXpkbWNpSUhacFpYZENiM2c5SWpBZ01DQXpOVEFnTlRBd0lqNDhjM1I1YkdVK0lEeHdZWFJvSUdacGJHdzlJblZ5YkNnalptbHNkR1Z5TVM0d0xqQXVNQ0F4TURBdU1UWWlQZzBLUEhOMlp5QjRiV3h1Y3owaWFIUjBjRG92TDNkM2R5NTNNeTV2Y21jdk1qQXdNQzl6ZG1jaUlIWnBaWGRDYjNnOUlqQWdNQ0F6TlRBZ05UQXdJajQ4YzNSNWJHVTlJbVpoYkhObExXbHRZV2RsTFdSbGMyTnlhWEIwYVc5dUlqNDhMM04yWno0PSIsCiAgICAgICJzaXplcyI6ICI1MTJ4NTEyIiwKICAgICAgInR5cGUiOiAiaW1hZ2Uvc3ZnK3htbCIKICAgIH0KICBdCn0=">
+    
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <script src="https://js.paystack.co/v1/inline.js"></script>
     <style>
@@ -18,6 +25,8 @@
             --border: #e2e8f0;
             --shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
             --premium: #f59e0b;
+            --offline: #ef4444;
+            --innovation: #8b5cf6;
         }
         
         * {
@@ -31,6 +40,7 @@
             background-color: #f1f5f9;
             color: var(--dark);
             line-height: 1.6;
+            overflow-x: hidden;
         }
         
         .container {
@@ -154,6 +164,14 @@
             background: linear-gradient(135deg, #e6900e, #ea580c);
         }
         
+        .btn-innovation {
+            background: linear-gradient(135deg, var(--innovation), #7c3aed);
+        }
+        
+        .btn-innovation:hover {
+            background: linear-gradient(135deg, #7c3aed, #6d28d9);
+        }
+        
         .features {
             padding: 4rem 0;
         }
@@ -178,6 +196,8 @@
             text-align: center;
             box-shadow: var(--shadow);
             transition: transform 0.3s;
+            position: relative;
+            overflow: hidden;
         }
         
         .feature-card:hover {
@@ -207,6 +227,7 @@
             border-radius: 15px;
             box-shadow: var(--shadow);
             padding: 30px;
+            position: relative;
         }
         
         .premium-badge {
@@ -282,6 +303,8 @@
             box-shadow: var(--shadow);
             max-width: 500px;
             margin: 0 auto;
+            position: relative;
+            overflow: hidden;
         }
         
         .country-selector {
@@ -410,128 +433,8 @@
             }
         }
         
-        /* PWA Install Prompt */
-        .pwa-install {
-            position: fixed;
-            bottom: 20px;
-            right: 20px;
-            background: white;
-            border-radius: 10px;
-            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.15);
-            padding: 20px;
-            max-width: 350px;
-            z-index: 1000;
-            display: none;
-        }
-        
-        .pwa-install.show {
-            display: block;
-        }
-        
-        .pwa-install .close {
-            position: absolute;
-            top: 10px;
-            right: 10px;
-            background: none;
-            border: none;
-            font-size: 1.2rem;
-            cursor: pointer;
-            color: var(--gray);
-        }
-        
-        /* Admin Page Styles */
-        .admin-login {
-            max-width: 500px;
-            margin: 100px auto;
-            padding: 30px;
-            background: white;
-            border-radius: 10px;
-            box-shadow: var(--shadow);
-        }
-        
-        .admin-login h2 {
-            text-align: center;
-            margin-bottom: 30px;
-            color: var(--primary);
-        }
-        
-        .admin-content {
-            max-width: 1200px;
-            margin: 50px auto;
-            padding: 0 20px;
-            display: none;
-        }
-        
-        .user-table {
-            width: 100%;
-            border-collapse: collapse;
-            margin-top: 20px;
-            background: white;
-            box-shadow: var(--shadow);
-            border-radius: 10px;
-            overflow: hidden;
-        }
-        
-        .user-table th, 
-        .user-table td {
-            padding: 15px;
-            text-align: left;
-            border-bottom: 1px solid var(--border);
-        }
-        
-        .user-table th {
-            background: var(--primary);
-            color: white;
-        }
-        
-        .user-table tr:last-child td {
-            border-bottom: none;
-        }
-        
-        .user-table tr:hover {
-            background: #f8fafc;
-        }
-        
-        /* Payment Modal */
-        .modal {
-            display: none;
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background: rgba(0, 0, 0, 0.7);
-            z-index: 1000;
-            justify-content: center;
-            align-items: center;
-        }
-        
-        .modal-content {
-            background: white;
-            border-radius: 15px;
-            width: 90%;
-            max-width: 500px;
-            padding: 30px;
-            position: relative;
-        }
-        
-        .modal-close {
-            position: absolute;
-            top: 15px;
-            right: 15px;
-            background: none;
-            border: none;
-            font-size: 1.5rem;
-            cursor: pointer;
-            color: var(--gray);
-        }
-        
-        .payment-form .input-group {
-            margin-bottom: 15px;
-        }
-        
-        /* Risk Reward Calculator */
-        .rr-calculator {
+        /* PWA Settings Section */
+        .pwa-settings {
             background: #fffbeb;
             padding: 20px;
             border-radius: 10px;
@@ -540,30 +443,265 @@
             display: none;
         }
         
-        .rr-calculator h3 {
+        .pwa-settings h3 {
             display: flex;
             align-items: center;
             margin-bottom: 20px;
             color: #b45309;
         }
         
-        .rr-calculator h3 i {
+        .pwa-settings h3 i {
             margin-right: 10px;
         }
         
-        .rr-result {
-            text-align: center;
+        .settings-option {
+            padding: 15px 0;
+            border-bottom: 1px solid rgba(148, 163, 184, 0.1);
+        }
+        
+        .settings-option:last-child {
+            border-bottom: none;
+        }
+        
+        .option-title {
+            font-weight: 600;
+            margin-bottom: 6px;
+            font-size: 1rem;
+        }
+        
+        .option-desc {
+            color: var(--gray);
+            margin-bottom: 12px;
+            font-size: 0.9rem;
+        }
+        
+        .toggle-switch {
+            position: relative;
+            display: inline-block;
+            width: 50px;
+            height: 26px;
+        }
+        
+        .toggle-switch input {
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+        
+        .slider {
+            position: absolute;
+            cursor: pointer;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background-color: rgba(148, 163, 184, 0.2);
+            transition: .4s;
+            border-radius: 34px;
+        }
+        
+        .slider:before {
+            position: absolute;
+            content: "";
+            height: 18px;
+            width: 18px;
+            left: 4px;
+            bottom: 4px;
+            background: white;
+            transition: .4s;
+            border-radius: 50%;
+        }
+        
+        input:checked + .slider {
+            background-color: var(--primary);
+        }
+        
+        input:checked + .slider:before {
+            transform: translateX(24px);
+        }
+        
+        /* PWA Install Prompt */
+        .install-prompt {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            background: white;
+            border-radius: 16px;
             padding: 15px;
-            margin-top: 20px;
-            background: #fef3c7;
-            border-radius: 8px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.15);
+            display: flex;
+            align-items: center;
+            gap: 15px;
+            z-index: 1000;
+            transform: translateY(150%);
+            transition: transform 0.5s ease;
+            max-width: 350px;
+        }
+        
+        .install-prompt.show {
+            transform: translateY(0);
+        }
+        
+        .install-icon {
+            width: 40px;
+            height: 40px;
+            background: var(--primary);
+            border-radius: 12px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-size: 20px;
+        }
+        
+        .install-text {
+            flex: 1;
+        }
+        
+        .install-close {
+            background: transparent;
+            border: none;
+            font-size: 20px;
+            color: var(--gray);
+            cursor: pointer;
+        }
+        
+        /* Offline Indicator */
+        .offline-indicator {
+            position: fixed;
+            bottom: 20px;
+            left: 20px;
+            background: var(--offline);
+            color: white;
+            padding: 10px 15px;
+            border-radius: 30px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            z-index: 100;
+            opacity: 0;
+            transform: translateY(20px);
+            transition: all 0.3s ease;
+        }
+        
+        .offline-indicator.show {
+            opacity: 1;
+            transform: translateY(0);
+        }
+        
+        /* Subscription Management */
+        .subscription-status {
+            background: #e0f2fe;
+            padding: 20px;
+            border-radius: 10px;
+            margin: 30px 0;
+            text-align: center;
+            display: none;
+            border-left: 4px solid var(--innovation);
+        }
+        
+        .subscription-title {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+            margin-bottom: 15px;
+            color: var(--innovation);
+        }
+        
+        .status-badge {
+            background: var(--innovation);
+            color: white;
+            padding: 5px 15px;
+            border-radius: 20px;
+            font-size: 0.9rem;
+            font-weight: 600;
+        }
+        
+        .status-expired {
+            background: var(--offline);
+        }
+        
+        /* Innovation Features */
+        .innovation-features {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 15px;
+            margin: 30px 0;
+            justify-content: center;
+        }
+        
+        .innovation-card {
+            background: white;
+            border-radius: 10px;
+            padding: 20px;
+            text-align: center;
+            box-shadow: var(--shadow);
+            flex: 1;
+            min-width: 200px;
+            max-width: 250px;
+            transition: all 0.3s;
+        }
+        
+        .innovation-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 10px 20px rgba(0, 0, 0, 0.1);
+        }
+        
+        .innovation-icon {
+            font-size: 2.5rem;
+            color: var(--innovation);
+            margin-bottom: 15px;
+        }
+        
+        /* Animated Elements */
+        @keyframes pulse {
+            0% { transform: scale(1); }
+            50% { transform: scale(1.05); }
+            100% { transform: scale(1); }
+        }
+        
+        .pulse {
+            animation: pulse 2s infinite;
+        }
+        
+        /* Currency Selector Enhancement */
+        .currency-selector {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 15px;
+        }
+        
+        .currency-flag {
+            width: 30px;
+            height: 20px;
+            border-radius: 3px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        
+        /* Trading Insights */
+        .insights-container {
+            background: #f0fdf4;
+            padding: 20px;
+            border-radius: 10px;
+            margin: 30px 0;
             display: none;
         }
         
-        .rr-ratio {
-            font-size: 2rem;
-            font-weight: 700;
-            color: #b45309;
+        .insight-item {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+            margin-bottom: 15px;
+            padding: 10px;
+            background: white;
+            border-radius: 8px;
+        }
+        
+        .insight-icon {
+            font-size: 1.5rem;
+            color: var(--secondary);
         }
     </style>
 </head>
@@ -575,7 +713,7 @@
                 <nav>
                     <div class="logo">
                         <i class="fas fa-chart-line"></i>
-                        <span>PipProfit</span>
+                        <span>PipProfit Pro</span>
                     </div>
                     <div class="nav-links" id="navLinks">
                         <a href="#features">Features</a>
@@ -592,37 +730,37 @@
 
         <section class="hero">
             <div class="container">
-                <h1>Calculate Your Forex Profits with Precision</h1>
-                <p>PipProfit helps traders instantly calculate potential profit or loss for any Forex trade. Perfect for both beginners and experienced traders.</p>
-                <a href="#pricing" class="btn">Get Premium Access</a>
+                <h1>Professional Forex Trading Tools</h1>
+                <p>Advanced profit calculation, risk management, and AI-powered insights for serious traders</p>
+                <a href="#pricing" class="btn pulse">Get Premium Access</a>
                 <a href="#calculator" class="btn btn-outline">Try Free Calculator</a>
             </div>
         </section>
 
         <section class="features" id="features">
             <div class="container">
-                <h2 class="section-title">Powerful Features</h2>
+                <h2 class="section-title">Innovative Trading Features</h2>
                 <div class="features-grid">
                     <div class="feature-card">
                         <div class="feature-icon">
                             <i class="fas fa-calculator"></i>
                         </div>
-                        <h3>Instant Calculation</h3>
-                        <p>Enter your trade details and get instant profit/loss calculations in USD with our advanced algorithm.</p>
+                        <h3>Precision Calculation</h3>
+                        <p>Real-time profit/loss calculation with currency-specific algorithms</p>
+                    </div>
+                    <div class="feature-card">
+                        <div class="feature-icon">
+                            <i class="fas fa-robot"></i>
+                        </div>
+                        <h3>AI Insights</h3>
+                        <p>Get AI-powered trading recommendations and risk analysis</p>
                     </div>
                     <div class="feature-card">
                         <div class="feature-icon">
                             <i class="fas fa-mobile-alt"></i>
                         </div>
-                        <h3>Mobile Optimized</h3>
-                        <p>Trade on the go with our responsive design that works perfectly on any device.</p>
-                    </div>
-                    <div class="feature-card">
-                        <div class="feature-icon">
-                            <i class="fas fa-crown"></i>
-                        </div>
-                        <h3>Premium Tools</h3>
-                        <p>Access advanced tools like Risk-Reward calculator and historical data with premium.</p>
+                        <h3>Anywhere Access</h3>
+                        <p>Full PWA functionality with offline mode and installable app</p>
                     </div>
                 </div>
             </div>
@@ -632,6 +770,19 @@
             <div class="container">
                 <h2 class="section-title">Forex Profit Calculator</h2>
                 <div class="calculator-container">
+                    <!-- Subscription Status -->
+                    <div class="subscription-status" id="subscriptionStatus">
+                        <div class="subscription-title">
+                            <i class="fas fa-crown"></i>
+                            <h3>Premium Subscription</h3>
+                            <span class="status-badge" id="subscriptionBadge">Active</span>
+                        </div>
+                        <p>Renews on: <strong id="renewalDate">2023-12-31</strong></p>
+                        <button class="btn btn-innovation" id="manageSubscription" style="margin-top: 15px;">
+                            <i class="fas fa-cog"></i> Manage Subscription
+                        </button>
+                    </div>
+                    
                     <div class="input-group">
                         <label for="lotSize">Lot Size</label>
                         <input type="number" id="lotSize" placeholder="Enter lot size (e.g., 0.1, 1.0)" step="0.01" min="0.01">
@@ -650,15 +801,19 @@
                     
                     <div class="input-group">
                         <label for="currencyPair">Currency Pair</label>
-                        <select id="currencyPair">
-                            <option value="EUR/USD">EUR/USD</option>
-                            <option value="GBP/USD">GBP/USD</option>
-                            <option value="USD/JPY">USD/JPY</option>
-                            <option value="AUD/USD">AUD/USD</option>
-                            <option value="USD/CAD">USD/CAD</option>
-                            <option value="NZD/USD">NZD/USD</option>
-                            <option value="USD/CHF">USD/CHF</option>
-                        </select>
+                        <div class="currency-selector">
+                            <img src="https://flagcdn.com/16x12/eu.png" class="currency-flag" id="baseFlag">
+                            <select id="currencyPair">
+                                <option value="EUR/USD">EUR/USD</option>
+                                <option value="GBP/USD">GBP/USD</option>
+                                <option value="USD/JPY">USD/JPY</option>
+                                <option value="AUD/USD">AUD/USD</option>
+                                <option value="USD/CAD">USD/CAD</option>
+                                <option value="NZD/USD">NZD/USD</option>
+                                <option value="USD/CHF">USD/CHF</option>
+                            </select>
+                            <img src="https://flagcdn.com/16x12/us.png" class="currency-flag" id="quoteFlag">
+                        </div>
                     </div>
                     
                     <button class="btn" style="width: 100%;" id="calculateBtn">Calculate Profit/Loss</button>
@@ -689,16 +844,70 @@
                             <p id="rrMessage">Your risk to reward ratio</p>
                         </div>
                     </div>
+                    
+                    <!-- Trading Insights (Premium Feature) -->
+                    <div class="insights-container" id="insightsContainer">
+                        <h3><i class="fas fa-lightbulb"></i> Trading Insights</h3>
+                        <div class="insight-item">
+                            <div class="insight-icon">
+                                <i class="fas fa-chart-line"></i>
+                            </div>
+                            <div>
+                                <strong>Market Trend</strong>
+                                <p>EUR/USD is showing bullish momentum</p>
+                            </div>
+                        </div>
+                        <div class="insight-item">
+                            <div class="insight-icon">
+                                <i class="fas fa-shield-alt"></i>
+                            </div>
+                            <div>
+                                <strong>Risk Recommendation</strong>
+                                <p>Set stop loss at 1.2250 for this trade</p>
+                            </div>
+                        </div>
+                        <div class="insight-item">
+                            <div class="insight-icon">
+                                <i class="fas fa-bell"></i>
+                            </div>
+                            <div>
+                                <strong>Economic Events</strong>
+                                <p>US Fed meeting tomorrow may impact USD</p>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- PWA Settings (Premium Feature) -->
+                    <div class="pwa-settings" id="pwaSettings">
+                        <h3><i class="fas fa-mobile-alt"></i> PWA Settings</h3>
+                        
+                        <div class="settings-option">
+                            <div class="option-title">Offline Mode</div>
+                            <div class="option-desc">Access calculator without internet</div>
+                            <label class="toggle-switch">
+                                <input type="checkbox" id="offlineToggle" checked>
+                                <span class="slider"></span>
+                            </label>
+                        </div>
+                        
+                        <div class="settings-option">
+                            <div class="option-title">Install App</div>
+                            <div class="option-desc">Add PipProfit to your home screen</div>
+                            <button class="btn btn-premium" id="installButton">
+                                <i class="fas fa-download"></i> Install Now
+                            </button>
+                        </div>
+                    </div>
                 </div>
             </div>
         </section>
 
         <section class="pricing" id="pricing">
             <div class="container">
-                <h2 class="section-title">Unlock Premium Features</h2>
+                <h2 class="section-title">Premium Monthly Subscription</h2>
                 <div class="pricing-card">
-                    <h3>Premium Access</h3>
-                    <p>Unlock unlimited calculations, save trade history, and get advanced features</p>
+                    <h3>Professional Plan</h3>
+                    <p>Unlock all premium features with our monthly subscription</p>
                     
                     <div class="country-selector">
                         <div class="input-group">
@@ -715,16 +924,32 @@
                     
                     <div class="price" id="dynamicPrice">₦1,500</div>
                     
-                    <ul class="benefits">
-                        <li><i class="fas fa-check-circle"></i> Unlimited profit calculations</li>
-                        <li><i class="fas fa-check-circle"></i> Save and review trade history</li>
-                        <li><i class="fas fa-check-circle"></i> Risk-Reward Ratio calculator</li>
-                        <li><i class="fas fa-check-circle"></i> Multiple currency pairs</li>
-                        <li><i class="fas fa-check-circle"></i> Priority support</li>
-                    </ul>
+                    <div class="innovation-features">
+                        <div class="innovation-card">
+                            <div class="innovation-icon">
+                                <i class="fas fa-brain"></i>
+                            </div>
+                            <h4>AI Insights</h4>
+                            <p>Real-time market analysis</p>
+                        </div>
+                        <div class="innovation-card">
+                            <div class="innovation-icon">
+                                <i class="fas fa-history"></i>
+                            </div>
+                            <h4>Trade History</h4>
+                            <p>Track all your calculations</p>
+                        </div>
+                        <div class="innovation-card">
+                            <div class="innovation-icon">
+                                <i class="fas fa-mobile"></i>
+                            </div>
+                            <h4>PWA Features</h4>
+                            <p>Offline & installable</p>
+                        </div>
+                    </div>
                     
                     <!-- Paystack Payment Button -->
-                    <button class="btn btn-premium" id="paystackButton" style="width: 100%;">
+                    <button class="btn btn-premium pulse" id="paystackButton" style="width: 100%;">
                         <i class="fas fa-lock"></i> Subscribe Now with Paystack
                     </button>
                     <p style="margin-top: 15px; font-size: 0.9rem;">Secure payment powered by Paystack</p>
@@ -736,8 +961,8 @@
             <div class="container">
                 <div class="footer-content">
                     <div class="footer-column">
-                        <h3>PipProfit</h3>
-                        <p>Advanced Forex profit calculator for traders who demand precision and efficiency.</p>
+                        <h3>PipProfit Pro</h3>
+                        <p>Advanced Forex tools for professional traders</p>
                     </div>
                     <div class="footer-column">
                         <h3>Quick Links</h3>
@@ -758,7 +983,7 @@
                     </div>
                 </div>
                 <div class="copyright">
-                    &copy; 2023 PipProfit. All rights reserved.
+                    &copy; 2023 PipProfit Pro. All rights reserved.
                 </div>
             </div>
         </footer>
@@ -795,7 +1020,7 @@
                             <th>Email</th>
                             <th>Subscription</th>
                             <th>Payment</th>
-                            <th>Join Date</th>
+                            <th>Renewal Date</th>
                         </tr>
                     </thead>
                     <tbody id="userTableBody">
@@ -828,6 +1053,14 @@
                     <input type="tel" id="phone" placeholder="Your phone number">
                 </div>
                 
+                <div class="input-group">
+                    <label>Subscription Plan</label>
+                    <div style="padding: 12px 15px; border: 1px solid var(--border); border-radius: 8px; background: #f8fafc;">
+                        <strong id="selectedPlan">Professional Plan</strong>
+                        <div id="planPrice">₦1,500 monthly</div>
+                    </div>
+                </div>
+                
                 <button type="button" class="btn btn-premium" id="processPayment" style="width: 100%;">
                     <i class="fas fa-lock"></i> Pay Now
                 </button>
@@ -836,11 +1069,23 @@
     </div>
     
     <!-- PWA Install Prompt -->
-    <div class="pwa-install" id="pwaInstall">
-        <button class="close" id="closePwa">&times;</button>
-        <h3>Install PipProfit App</h3>
-        <p>Add PipProfit to your home screen for easy access and offline use.</p>
-        <button class="btn" id="installBtn" style="width: 100%; margin-top: 15px;">Install Now</button>
+    <div class="install-prompt" id="installPrompt">
+        <div class="install-icon">
+            <i class="fas fa-download"></i>
+        </div>
+        <div class="install-text">
+            <strong>Install PipProfit</strong>
+            <p>Add to home screen for quick access</p>
+        </div>
+        <button class="install-close" id="closePrompt">
+            <i class="fas fa-times"></i>
+        </button>
+    </div>
+    
+    <!-- Offline Indicator -->
+    <div class="offline-indicator" id="offlineIndicator">
+        <i class="fas fa-wifi-slash"></i>
+        <span>You are currently offline</span>
     </div>
 
     <script>
@@ -857,9 +1102,6 @@
         const adminPage = document.getElementById('admin-page');
         const adminLink = document.getElementById('adminLink');
         const userTableBody = document.getElementById('userTableBody');
-        const pwaInstall = document.getElementById('pwaInstall');
-        const installBtn = document.getElementById('installBtn');
-        const closePwa = document.getElementById('closePwa');
         const paymentModal = document.getElementById('paymentModal');
         const modalClose = document.getElementById('modalClose');
         const processPayment = document.getElementById('processPayment');
@@ -869,9 +1111,25 @@
         const rrCalculator = document.getElementById('rrCalculator');
         const rrResult = document.getElementById('rrResult');
         const rrRatio = document.getElementById('rrRatio');
+        const installButton = document.getElementById('installButton');
+        const closePrompt = document.getElementById('closePrompt');
+        const offlineIndicator = document.getElementById('offlineIndicator');
+        const offlineToggle = document.getElementById('offlineToggle');
+        const pwaSettings = document.getElementById('pwaSettings');
+        const insightsContainer = document.getElementById('insightsContainer');
+        const subscriptionStatus = document.getElementById('subscriptionStatus');
+        const subscriptionBadge = document.getElementById('subscriptionBadge');
+        const renewalDate = document.getElementById('renewalDate');
+        const manageSubscription = document.getElementById('manageSubscription');
+        const selectedPlan = document.getElementById('selectedPlan');
+        const planPrice = document.getElementById('planPrice');
+        const currencyPair = document.getElementById('currencyPair');
+        const baseFlag = document.getElementById('baseFlag');
+        const quoteFlag = document.getElementById('quoteFlag');
         
-        // Check if user is premium (in a real app, this would come from backend)
+        // Check if user is premium
         let isPremiumUser = localStorage.getItem('premiumUser') === 'true';
+        let subscriptionExpiry = localStorage.getItem('subscriptionExpiry') || 0;
         
         // Prices by country
         const prices = {
@@ -887,13 +1145,49 @@
         
         // Initialize the app
         function initApp() {
-            // Show premium features if user is premium
-            if (isPremiumUser) {
-                rrCalculator.style.display = 'block';
-            }
+            // Check subscription status
+            checkSubscription();
             
             // Set initial price display
             updatePriceDisplay();
+            
+            // Set initial plan display in payment modal
+            updatePlanDisplay();
+            
+            // Set currency flags
+            updateCurrencyFlags();
+        }
+        
+        // Check subscription status
+        function checkSubscription() {
+            const now = Date.now();
+            const expiry = parseInt(subscriptionExpiry);
+            
+            if (expiry > now) {
+                isPremiumUser = true;
+                localStorage.setItem('premiumUser', 'true');
+                
+                // Show premium features
+                rrCalculator.style.display = 'block';
+                pwaSettings.style.display = 'block';
+                insightsContainer.style.display = 'block';
+                subscriptionStatus.style.display = 'block';
+                
+                // Set renewal date
+                const expiryDate = new Date(expiry);
+                renewalDate.textContent = expiryDate.toLocaleDateString();
+                
+                // Calculate days until renewal
+                const daysLeft = Math.ceil((expiry - now) / (1000 * 60 * 60 * 24));
+                subscriptionBadge.textContent = `Active (${daysLeft} days left)`;
+            } else if (expiry > 0) {
+                // Subscription expired
+                subscriptionStatus.style.display = 'block';
+                subscriptionBadge.textContent = "Expired";
+                subscriptionBadge.classList.add('status-expired');
+                isPremiumUser = false;
+                localStorage.setItem('premiumUser', 'false');
+            }
         }
         
         // Update price display based on country selection
@@ -901,6 +1195,38 @@
             const country = countrySelect.value;
             currentPayment = prices[country];
             dynamicPrice.textContent = currentPayment.display;
+        }
+        
+        // Update plan display in payment modal
+        function updatePlanDisplay() {
+            selectedPlan.textContent = "Professional Plan";
+            planPrice.textContent = `${currentPayment.display} monthly`;
+        }
+        
+        // Update currency flags
+        function updateCurrencyFlags() {
+            const pair = currencyPair.value;
+            const [base, quote] = pair.split('/');
+            
+            // Set flag sources
+            baseFlag.src = `https://flagcdn.com/16x12/${getCountryCode(base)}.png`;
+            quoteFlag.src = `https://flagcdn.com/16x12/${getCountryCode(quote)}.png`;
+        }
+        
+        // Get country code from currency
+        function getCountryCode(currency) {
+            const codes = {
+                'EUR': 'eu',
+                'USD': 'us',
+                'GBP': 'gb',
+                'JPY': 'jp',
+                'AUD': 'au',
+                'CAD': 'ca',
+                'NZD': 'nz',
+                'CHF': 'ch'
+            };
+            
+            return codes[currency] || 'eu';
         }
         
         // Toggle mobile menu
@@ -927,7 +1253,7 @@
                 return;
             }
             
-            // Simplified calculation (in real app, this would be more complex based on pair)
+            // Simplified calculation
             const pipDifference = Math.abs(exitPrice - entryPrice);
             let pipValue = 10; // Default for XXX/USD pairs
             const quoteCurrency = currencyPair.split('/')[1];
@@ -947,6 +1273,11 @@
             
             // Scroll to results
             result.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            
+            // Show insights for premium users
+            if (isPremiumUser) {
+                insightsContainer.style.display = 'block';
+            }
         });
         
         // Calculate Risk Reward Ratio
@@ -966,6 +1297,7 @@
         
         // Open payment modal
         paystackButton.addEventListener('click', () => {
+            updatePlanDisplay();
             paymentModal.style.display = 'flex';
         });
         
@@ -989,26 +1321,22 @@
             
             // Process payment with Paystack
             const handler = PaystackPop.setup({
-                key: 'pk_test_1f759a668641f37cd1b315c1d9cfa5c01ec2f202', // Replace with your Paystack public key
+                key: 'pk_test_1f759a668641f37cd1b315c1d9cfa5c01ec2f202',
                 email: email,
                 amount: currentPayment.amount,
                 currency: currentPayment.currency,
-                ref: 'PP' + Date.now(), // Generate unique reference
+                ref: 'PP' + Date.now(),
                 metadata: {
                     custom_fields: [
                         { display_name: "Full Name", variable_name: "full_name", value: name }
                     ]
                 },
                 callback: function(response) {
-                    // Payment successful! Unlock premium features
-                    localStorage.setItem('premiumUser', 'true');
-                    isPremiumUser = true;
+                    // Payment successful! Activate premium
+                    activatePremium();
                     
                     // Show success message
                     alert('Payment successful! Premium features are now unlocked.');
-                    
-                    // Show premium features
-                    rrCalculator.style.display = 'block';
                     
                     // Redirect to calculator
                     window.location.hash = '#calculator';
@@ -1021,8 +1349,29 @@
             handler.openIframe();
         });
         
+        // Activate premium subscription
+        function activatePremium() {
+            // Set subscription to 30 days from now
+            const expiryDate = Date.now() + 30 * 24 * 60 * 60 * 1000;
+            subscriptionExpiry = expiryDate.toString();
+            
+            localStorage.setItem('premiumUser', 'true');
+            localStorage.setItem('subscriptionExpiry', subscriptionExpiry);
+            
+            isPremiumUser = true;
+            checkSubscription();
+        }
+        
+        // Manage subscription
+        manageSubscription.addEventListener('click', () => {
+            window.location.hash = '#pricing';
+        });
+        
         // Country selector change
         countrySelect.addEventListener('change', updatePriceDisplay);
+        
+        // Currency pair change
+        currencyPair.addEventListener('change', updateCurrencyFlags);
         
         // Admin login
         adminLink.addEventListener('click', (e) => {
@@ -1045,11 +1394,11 @@
         
         // Simulated user data
         const users = [
-            { id: 1, name: 'John Trader', email: 'john@gmail.com', subscription: 'Premium', payment: '₦1,500', joinDate: '2023-01-15' },
-            { id: 2, name: 'Sarah Forex', email: 'sarah@gmail.com', subscription: 'Premium', payment: '$9.99', joinDate: '2023-02-20' },
-            { id: 3, name: 'Mike Investor', email: 'mike@gmail.com', subscription: 'Premium', payment: '£7.99', joinDate: '2023-03-10' },
-            { id: 4, name: 'Emily Stocks', email: 'emily@gmail.com', subscription: 'Basic', payment: 'Free', joinDate: '2023-04-05' },
-            { id: 5, name: 'David Exchange', email: 'david@gmail.com', subscription: 'Premium', payment: '€8.99', joinDate: '2023-05-18' }
+            { id: 1, name: 'John Trader', email: 'john@gmail.com', subscription: 'Premium', payment: '₦1,500', renewal: '2023-12-15' },
+            { id: 2, name: 'Sarah Forex', email: 'sarah@gmail.com', subscription: 'Premium', payment: '$9.99', renewal: '2023-12-20' },
+            { id: 3, name: 'Mike Investor', email: 'mike@gmail.com', subscription: 'Premium', payment: '£7.99', renewal: '2023-12-10' },
+            { id: 4, name: 'Emily Stocks', email: 'emily@gmail.com', subscription: 'Basic', payment: 'Free', renewal: '-' },
+            { id: 5, name: 'David Exchange', email: 'david@gmail.com', subscription: 'Premium', payment: '€8.99', renewal: '2023-12-18' }
         ];
         
         // Populate user table
@@ -1063,64 +1412,165 @@
                     <td>${user.email}</td>
                     <td>${user.subscription}</td>
                     <td>${user.payment}</td>
-                    <td>${user.joinDate}</td>
+                    <td>${user.renewal}</td>
                 `;
                 userTableBody.appendChild(row);
             });
         }
         
-        // PWA Installation Prompt
-        let deferredPrompt;
-        
-        window.addEventListener('beforeinstallprompt', (e) => {
-            // Prevent the mini-infobar from appearing on mobile
-            e.preventDefault();
-            // Stash the event so it can be triggered later
-            deferredPrompt = e;
-            // Show the install button
-            setTimeout(() => {
-                pwaInstall.classList.add('show');
-            }, 3000);
-        });
-        
-        installBtn.addEventListener('click', async () => {
-            if (!deferredPrompt) return;
+        // =====================
+        // PWA Functionality
+        // =====================
+        function setupPWA() {
+            const installPrompt = document.getElementById('installPrompt');
             
-            // Show the install prompt
-            deferredPrompt.prompt();
-            // Wait for the user to respond to the prompt
-            const { outcome } = await deferredPrompt.userChoice;
+            let deferredPrompt;
             
-            if (outcome === 'accepted') {
-                console.log('User accepted the install prompt');
-            } else {
-                console.log('User dismissed the install prompt');
-            }
-            // We no longer need the prompt. Clear it up.
-            deferredPrompt = null;
-            // Hide the install button
-            pwaInstall.classList.remove('show');
-        });
-        
-        closePwa.addEventListener('click', () => {
-            pwaInstall.classList.remove('show');
-        });
-        
-        // Service Worker Registration
-        if ('serviceWorker' in navigator) {
-            window.addEventListener('load', () => {
-                navigator.serviceWorker.register('/sw.js')
-                .then(registration => {
-                    console.log('Service Worker registered: ', registration);
-                })
-                .catch(error => {
-                    console.log('Service Worker registration failed: ', error);
-                });
+            // Listen for beforeinstallprompt event
+            window.addEventListener('beforeinstallprompt', (e) => {
+                e.preventDefault();
+                deferredPrompt = e;
+                
+                // Show the install prompt after 5 seconds
+                setTimeout(() => {
+                    installPrompt.classList.add('show');
+                }, 5000);
             });
+            
+            // Close prompt
+            closePrompt.addEventListener('click', () => {
+                installPrompt.classList.remove('show');
+            });
+            
+            // Install button handler
+            function installApp() {
+                if (deferredPrompt) {
+                    deferredPrompt.prompt();
+                    deferredPrompt.userChoice.then((choiceResult) => {
+                        if (choiceResult.outcome === 'accepted') {
+                            console.log('User installed PipProfit');
+                        }
+                        deferredPrompt = null;
+                        installPrompt.classList.remove('show');
+                    });
+                }
+            }
+            
+            // Add event listeners to install buttons
+            if (installButton) installButton.addEventListener('click', installApp);
+            
+            // Track app installed event
+            window.addEventListener('appinstalled', () => {
+                console.log('PipProfit was installed successfully');
+                installPrompt.classList.remove('show');
+            });
+            
+            // Offline detection
+            window.addEventListener('offline', () => {
+                offlineIndicator.classList.add('show');
+            });
+            
+            window.addEventListener('online', () => {
+                offlineIndicator.classList.remove('show');
+            });
+            
+            // Initialize offline status
+            if (!navigator.onLine) {
+                offlineIndicator.classList.add('show');
+            }
+            
+            // Offline toggle functionality
+            if (offlineToggle) {
+                offlineToggle.addEventListener('change', function() {
+                    if (this.checked) {
+                        localStorage.setItem('offlineEnabled', 'true');
+                        alert('Offline mode enabled. Calculator will work without internet.');
+                    } else {
+                        localStorage.setItem('offlineEnabled', 'false');
+                    }
+                });
+                
+                // Initialize offline toggle state
+                if (localStorage.getItem('offlineEnabled') === 'true') {
+                    offlineToggle.checked = true;
+                }
+            }
+        }
+        
+        // Register Service Worker
+        function registerServiceWorker() {
+            if ('serviceWorker' in navigator) {
+                const swUrl = createServiceWorker();
+                
+                navigator.serviceWorker.register(swUrl).then(registration => {
+                    console.log('ServiceWorker registered with scope: ', registration.scope);
+                }).catch(err => {
+                    console.log('ServiceWorker registration failed: ', err);
+                });
+            }
+        }
+        
+        // Service Worker Code (as Blob)
+        function createServiceWorker() {
+            const serviceWorkerCode = `
+                // Cache name
+                const CACHE_NAME = 'pipprofit-v1';
+                
+                // Files to cache
+                const urlsToCache = [
+                    '/',
+                    '/index.html',
+                    '/style.css',
+                    '/app.js',
+                    '/manifest.json',
+                    'https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css',
+                    'https://js.paystack.co/v1/inline.js'
+                ];
+                
+                // Install event
+                self.addEventListener('install', event => {
+                    event.waitUntil(
+                        caches.open(CACHE_NAME)
+                            .then(cache => cache.addAll(urlsToCache))
+                    );
+                });
+                
+                // Fetch event
+                self.addEventListener('fetch', event => {
+                    event.respondWith(
+                        caches.match(event.request)
+                            .then(response => response || fetch(event.request))
+                    );
+                });
+                
+                // Activate event
+                self.addEventListener('activate', event => {
+                    const cacheWhitelist = [CACHE_NAME];
+                    event.waitUntil(
+                        caches.keys().then(cacheNames => {
+                            return Promise.all(
+                                cacheNames.map(cacheName => {
+                                    if (cacheWhitelist.indexOf(cacheName) === -1) {
+                                        return caches.delete(cacheName);
+                                    }
+                                })
+                            );
+                        })
+                    );
+                });
+            `;
+            
+            // Create a Blob from the service worker code
+            const blob = new Blob([serviceWorkerCode], { type: 'application/javascript' });
+            return URL.createObjectURL(blob);
         }
         
         // Initialize the app
-        initApp();
+        document.addEventListener('DOMContentLoaded', function() {
+            initApp();
+            setupPWA();
+            registerServiceWorker();
+        });
     </script>
 </body>
 </html>
