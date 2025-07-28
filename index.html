@@ -996,17 +996,17 @@
                     
                     <div class="input-group">
                         <label for="lotSize">Lot Size</label>
-                        <input type="number" id="lotSize" placeholder="Enter lot size (e.g., 0.1, 1.0)" step="0.01" min="0.01">
+                        <input type="number" id="lotSize" placeholder="Enter lot size (e.g., 0.1, 1.0)" step="0.01" min="0.01" value="1.0">
                     </div>
                     
                     <div class="input-row">
                         <div class="input-group">
                             <label for="entryPrice">Entry Price</label>
-                            <input type="number" id="entryPrice" placeholder="Entry price (e.g., 1.2345)" step="0.0001" min="0">
+                            <input type="number" id="entryPrice" placeholder="Entry price (e.g., 1.2345)" step="0.0001" min="0" value="1.1200">
                         </div>
                         <div class="input-group">
                             <label for="exitPrice">Exit Price</label>
-                            <input type="number" id="exitPrice" placeholder="Exit price (e.g., 1.2456)" step="0.0001" min="0">
+                            <input type="number" id="exitPrice" placeholder="Exit price (e.g., 1.2456)" step="0.0001" min="0" value="1.1350">
                         </div>
                     </div>
                     
@@ -1073,11 +1073,11 @@
                         <div class="input-row">
                             <div class="input-group">
                                 <label for="riskAmount">Risk Amount ($)</label>
-                                <input type="number" id="riskAmount" placeholder="Amount you're risking">
+                                <input type="number" id="riskAmount" placeholder="Amount you're risking" value="100">
                             </div>
                             <div class="input-group">
                                 <label for="rewardAmount">Reward Amount ($)</label>
-                                <input type="number" id="rewardAmount" placeholder="Potential reward">
+                                <input type="number" id="rewardAmount" placeholder="Potential reward" value="300">
                             </div>
                         </div>
                         <button class="btn btn-premium" style="width: 100%;" id="calculateRR">Calculate RR Ratio</button>
@@ -1439,6 +1439,7 @@
                     this.updateMarketSentiment();
                     this.updateProprietaryIndicator();
                     this.initTradeSimulator();
+                    this.calculateProfit(); // Calculate initial profit
                 },
                 
                 // Check subscription status
@@ -1569,6 +1570,12 @@
                         this.updateCurrencyFlags();
                         this.updateMarketSentiment();
                         this.updateProprietaryIndicator();
+                        this.calculateProfit();
+                    });
+                    
+                    // Position type change
+                    this.positionType.addEventListener('change', () => {
+                        this.calculateProfit();
                     });
                     
                     // Admin login
@@ -1641,7 +1648,45 @@
                     // Show insights for premium users
                     if (this.isPremiumUser) {
                         this.insightsContainer.style.display = 'block';
+                        this.updateInsights();
                     }
+                },
+                
+                // Update trading insights
+                updateInsights() {
+                    const pair = this.currencyPair.value;
+                    const position = this.positionType.value;
+                    const entry = parseFloat(document.getElementById('entryPrice').value);
+                    
+                    // Update market trend
+                    const trends = {
+                        'EUR/USD': 'Bullish momentum increasing',
+                        'GBP/USD': 'Bearish pressure building',
+                        'USD/JPY': 'Neutral with sideways movement',
+                        'AUD/USD': 'Bullish trend emerging',
+                        'USD/CAD': 'Strong bearish sentiment',
+                        'NZD/USD': 'Slightly bullish with mixed signals',
+                        'USD/CHF': 'Moderate bullish pressure'
+                    };
+                    this.marketTrend.textContent = `${pair}: ${trends[pair] || 'Moderate market activity'}`;
+                    
+                    // Update risk recommendation
+                    const stopLoss = position === 'long' 
+                        ? (entry * 0.995).toFixed(4) 
+                        : (entry * 1.005).toFixed(4);
+                    this.riskRecommendation.textContent = `Set stop loss at ${stopLoss} for this trade`;
+                    
+                    // Update economic events
+                    const events = {
+                        'EUR/USD': 'ECB interest rate decision tomorrow',
+                        'GBP/USD': 'UK inflation data release in 2 days',
+                        'USD/JPY': 'Bank of Japan meeting next week',
+                        'AUD/USD': 'RBA minutes release tomorrow',
+                        'USD/CAD': 'Canadian employment data on Friday',
+                        'NZD/USD': 'NZ business confidence index tomorrow',
+                        'USD/CHF': 'SNB monetary policy next week'
+                    };
+                    this.economicEvents.textContent = events[pair] || 'US Fed meeting tomorrow may impact USD';
                 },
                 
                 // Calculate Risk Reward Ratio
@@ -1727,6 +1772,7 @@
                     
                     this.isPremiumUser = true;
                     this.checkSubscription();
+                    this.calculateProfit(); // Recalculate to show premium features
                 },
                 
                 // Admin login
@@ -1900,7 +1946,7 @@
                     ctx.stroke();
                     
                     // Draw price line
-                    ctx.strokeStyle = var(--primary);
+                    ctx.strokeStyle = '#2563eb';
                     ctx.lineWidth = 2;
                     ctx.beginPath();
                     
@@ -1922,13 +1968,13 @@
                     const lastX = padding + (width - padding * 2) * ((this.simulatorData.length - 1) / (this.simulatorData.length - 1));
                     const lastY = padding + (height - padding * 2) * (1 - (lastPoint.y - min) / range);
                     
-                    ctx.fillStyle = var(--primary);
+                    ctx.fillStyle = '#2563eb';
                     ctx.beginPath();
                     ctx.arc(lastX, lastY, 5, 0, Math.PI * 2);
                     ctx.fill();
                     
                     // Draw price label
-                    ctx.fillStyle = var(--dark);
+                    ctx.fillStyle = '#1e293b';
                     ctx.font = '12px Arial';
                     ctx.textAlign = 'right';
                     ctx.fillText(lastPoint.y.toFixed(2), lastX - 10, lastY - 10);
