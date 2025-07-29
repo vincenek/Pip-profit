@@ -1591,7 +1591,7 @@
                     });
                 },
                 
-                // Calculate profit/loss with improved accuracy
+                // Calculate profit/loss with improved accuracy - FIXED SECTION
                 calculateProfit() {
                     const lotSize = parseFloat(document.getElementById('lotSize').value) || 0;
                     const entryPrice = parseFloat(document.getElementById('entryPrice').value) || 0;
@@ -1615,17 +1615,17 @@
                         ? exitPrice - entryPrice 
                         : entryPrice - exitPrice;
                     
-                    // Calculate pip value based on currency pair
+                    // Calculate pip value based on currency pair - CORRECTED SECTION
                     let pipValue;
                     if (quoteCurrency === 'USD') {
                         // For XXX/USD pairs
                         pipValue = 10 * lotSize;
                     } else if (baseCurrency === 'USD') {
                         // For USD/XXX pairs
-                        pipValue = (10 * lotSize) / exitPrice;
+                        pipValue = (10 * lotSize) * exitPrice;  // FIXED: multiplication instead of division
                     } else {
                         // For cross pairs (not USD based)
-                        pipValue = (10 * lotSize) / exitPrice;
+                        pipValue = (10 * lotSize) * exitPrice;  // FIXED: multiplication instead of division
                     }
                     
                     // Calculate profit in pips
