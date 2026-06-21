@@ -1,0 +1,9 @@
+{
+  "name": "pip-profit",
+  "version": "1.0.0",
+  "private": true,
+  "description": "PipProfit — trading calculator with AI-powered crypto signal engine",
+  "dependencies": {
+    "@netlify/blobs": "^10.0.0"
+  }
+}

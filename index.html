@@ -916,6 +916,56 @@
             gap: 10px;
             margin-top: 20px;
         }
+
+        /* ===== Live Signals Dashboard ===== */
+        .signals-section { padding: 40px 0; background: #f8fafc; }
+        .track-record {
+            display: flex; flex-wrap: wrap; justify-content: center; gap: 14px;
+            margin: 14px auto 24px; max-width: 760px;
+        }
+        .stat-pill {
+            background: #fff; border: 1px solid #e2e8f0; border-radius: 10px;
+            padding: 10px 16px; text-align: center; min-width: 96px;
+            box-shadow: 0 1px 3px rgba(0,0,0,.05);
+        }
+        .stat-pill .num { font-size: 1.4rem; font-weight: 700; color: var(--primary, #2563eb); }
+        .stat-pill .lbl { font-size: .72rem; text-transform: uppercase; letter-spacing: .04em; opacity: .65; }
+        .signals-grid {
+            display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 18px; margin-top: 10px;
+        }
+        .signal-card {
+            background: #fff; border-radius: 14px; padding: 18px 20px;
+            border: 1px solid #e2e8f0; box-shadow: 0 4px 14px rgba(0,0,0,.06);
+            border-top: 4px solid #94a3b8;
+        }
+        .signal-card.buy { border-top-color: #16a34a; }
+        .signal-card.sell { border-top-color: #dc2626; }
+        .signal-card.no_trade { border-top-color: #94a3b8; opacity: .9; }
+        .signal-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+        .signal-pair { font-size: 1.15rem; font-weight: 700; }
+        .signal-dir {
+            font-size: .78rem; font-weight: 700; padding: 4px 10px; border-radius: 20px;
+            color: #fff; letter-spacing: .03em;
+        }
+        .signal-dir.buy { background: #16a34a; }
+        .signal-dir.sell { background: #dc2626; }
+        .signal-dir.no_trade { background: #94a3b8; }
+        .signal-headline { font-size: .9rem; margin: 6px 0 10px; opacity: .9; }
+        .signal-levels {
+            display: grid; grid-template-columns: 1fr 1fr; gap: 6px 14px;
+            font-size: .82rem; background: #f1f5f9; border-radius: 8px; padding: 10px 12px; margin-bottom: 10px;
+        }
+        .signal-levels span b { color: #0f172a; }
+        .signal-meta { font-size: .74rem; opacity: .7; display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
+        .signal-tag { background: #eef2ff; color: #4338ca; border-radius: 6px; padding: 2px 8px; }
+        .signal-tag.warn { background: #fef3c7; color: #92400e; }
+        .signal-reason { font-size: .82rem; line-height: 1.45; opacity: .9; }
+        .signal-conf-bar { height: 6px; border-radius: 4px; background: #e2e8f0; overflow: hidden; margin: 8px 0; }
+        .signal-conf-bar > i { display: block; height: 100%; background: var(--primary, #2563eb); }
+        .signal-locked { text-align: center; padding: 14px; font-size: .85rem; opacity: .8; }
+        .signal-loading, .signal-error { text-align: center; padding: 24px; opacity: .7; grid-column: 1 / -1; }
+        .signals-disclaimer { text-align: center; font-size: .76rem; opacity: .6; margin-top: 20px; }
     </style>
 </head>
 <body>
@@ -1168,6 +1218,25 @@
                         </div>
                     </div>
                 </div>
+            </div>
+        </section>
+
+        <!-- ===== LIVE SIGNALS DASHBOARD (powered by the signal engine) ===== -->
+        <section class="signals-section" id="signals">
+            <div class="container">
+                <h2 class="section-title"><i class="fas fa-satellite-dish"></i> Live Forex Signals</h2>
+                <p style="text-align:center;max-width:680px;margin:0 auto 10px;opacity:.85;">
+                    Multi-timeframe (Daily → 4H → 1H) signals with ADX trend filtering and
+                    economic-calendar awareness. Each call shows the full trade plan and reasoning.
+                </p>
+                <div id="trackRecord" class="track-record">Loading track record…</div>
+                <div id="signalsGrid" class="signals-grid">
+                    <div class="signal-loading">Loading live signals… (the engine runs on a schedule)</div>
+                </div>
+                <p class="signals-disclaimer">
+                    ⚠ Technical research, not financial advice. Signals do not place trades.
+                    Past performance shown is the engine's self-graded record and does not guarantee future results.
+                </p>
             </div>
         </section>
 
@@ -1688,12 +1757,46 @@
                     }
                 },
                 
-                // Update trading insights
-                updateInsights() {
-                    const pair = this.currencyPair.value;
+                // Update trading insights — try the LIVE crypto signal engine
+                // first, fall back to the static forex hints if it's unavailable.
+                async updateInsights() {
+                    const selectedPair = this.currencyPair.value;
+                    try {
+                        const res = await fetch('/.netlify/functions/get-signal?pair=' + encodeURIComponent(selectedPair));
+                        if (res.ok) {
+                            const s = await res.json();
+                            const dir = (s.direction || 'no_trade').toUpperCase().replace('_', ' ');
+                            const conf = (typeof s.confidence === 'number') ? `${s.confidence}%` : '';
+
+                            // Line 1: the call
+                            this.marketTrend.textContent =
+                                `${s.pair}: ${dir} ${conf ? '(' + conf + ' conviction)' : ''} — ${s.headline || ''}`.trim();
+
+                            // Line 2: the actual trade plan
+                            if (s.direction && s.direction !== 'no_trade') {
+                                this.riskRecommendation.textContent =
+                                    `Entry ${s.entry} | SL ${s.stop_loss} | TP1 ${s.take_profit_1} | TP2 ${s.take_profit_2} | R:R ${s.risk_reward}`;
+                            } else {
+                                this.riskRecommendation.textContent =
+                                    `No high-probability setup right now. Invalidation/watch: ${s.invalidation || s.headline || '—'}`;
+                            }
+
+                            // Line 3: the reasoning + news + freshness
+                            const when = s.generatedAt ? new Date(s.generatedAt).toLocaleString() : '';
+                            const regime = s.snapshot && s.snapshot.regime ? `[${s.snapshot.regime}] ` : '';
+                            const news = s.news_risk ? `  📰 ${s.news_risk}` : '';
+                            this.economicEvents.textContent =
+                                `${regime}${s.technical_reasoning || ''}${news}${when ? '  (updated ' + when + ')' : ''}`.trim();
+                            return; // live signal shown — done
+                        }
+                    } catch (e) {
+                        // network/engine not ready — fall through to static hints
+                    }
+
+                    const pair = selectedPair;
                     const position = this.positionType.value;
                     const entry = parseFloat(document.getElementById('entryPrice').value);
-                    
+
                     // Update market trend
                     const trends = {
                         'EUR/USD': 'Bullish momentum increasing',
@@ -2175,6 +2278,103 @@
             // Initialize the app
             app.init();
         });
+    </script>
+
+    <!-- ===== Live Signals Dashboard renderer ===== -->
+    <script>
+        (function () {
+            const grid = document.getElementById('signalsGrid');
+            const track = document.getElementById('trackRecord');
+            if (!grid) return;
+
+            const isPremium = () => localStorage.getItem('premiumUser') === 'true';
+            const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, c =>
+                ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+            function renderStats(stats) {
+                if (!stats || !stats.total) {
+                    track.innerHTML = '<div class="stat-pill"><div class="num">—</div>' +
+                        '<div class="lbl">Track record builds as signals resolve</div></div>';
+                    return;
+                }
+                const pills = [
+                    ['Win rate', stats.winRate + '%'],
+                    ['Avg R', (stats.avgR > 0 ? '+' : '') + stats.avgR],
+                    ['Total R', (stats.totalR > 0 ? '+' : '') + stats.totalR],
+                    ['Trades', stats.total],
+                    ['Open', stats.open],
+                ];
+                track.innerHTML = pills.map(p =>
+                    `<div class="stat-pill"><div class="num">${esc(p[1])}</div><div class="lbl">${esc(p[0])}</div></div>`
+                ).join('');
+            }
+
+            function card(s) {
+                const dir = (s.direction || 'no_trade');
+                const dirLabel = dir.toUpperCase().replace('_', ' ');
+                const conf = typeof s.confidence === 'number' ? s.confidence : 0;
+                const snap = s.snapshot || {};
+                const tags = [];
+                if (snap.regime) tags.push(`<span class="signal-tag">${esc(snap.regime)}</span>`);
+                if (snap.newsBlackout) tags.push('<span class="signal-tag warn">⚠ news window</span>');
+                if (s.risk_reward) tags.push(`<span class="signal-tag">R:R ${esc(s.risk_reward)}</span>`);
+
+                let body;
+                if (dir === 'no_trade') {
+                    body = `<div class="signal-reason">${esc(s.technical_reasoning || s.headline || 'No high-probability setup right now.')}</div>`;
+                } else if (!isPremium()) {
+                    // Free users: tease the call, lock the levels + reasoning.
+                    body = `<div class="signal-locked">🔒 Entry, stop-loss, targets &amp; full reasoning are a premium feature.
+                        <br><a href="#pricing" style="color:var(--primary,#2563eb);font-weight:600;">Unlock signals →</a></div>`;
+                } else {
+                    body =
+                        `<div class="signal-levels">
+                            <span>Entry <b>${esc(s.entry)}</b></span>
+                            <span>R:R <b>${esc(s.risk_reward)}</b></span>
+                            <span>Stop <b>${esc(s.stop_loss)}</b></span>
+                            <span>TP1 <b>${esc(s.take_profit_1)}</b></span>
+                            <span>TP2 <b>${esc(s.take_profit_2)}</b></span>
+                            <span>TF <b>${esc(s.timeframe)}</b></span>
+                        </div>
+                        <div class="signal-reason"><b>Why:</b> ${esc(s.technical_reasoning)}</div>
+                        ${s.invalidation ? `<div class="signal-reason" style="margin-top:6px;"><b>Invalidation:</b> ${esc(s.invalidation)}</div>` : ''}
+                        ${s.news_risk ? `<div class="signal-reason" style="margin-top:6px;opacity:.75;"><b>News:</b> ${esc(s.news_risk)}</div>` : ''}`;
+                }
+
+                const when = s.generatedAt ? new Date(s.generatedAt).toLocaleString() : '';
+                return `<div class="signal-card ${dir}">
+                    <div class="signal-head">
+                        <span class="signal-pair">${esc(s.pair)}</span>
+                        <span class="signal-dir ${dir}">${esc(dirLabel)}</span>
+                    </div>
+                    <div class="signal-headline">${esc(s.headline || '')}</div>
+                    <div class="signal-conf-bar"><i style="width:${conf}%"></i></div>
+                    <div class="signal-meta">${tags.join('')}<span>conviction ${conf}%</span></div>
+                    ${body}
+                    <div class="signal-meta" style="margin-top:8px;">updated ${esc(when)}</div>
+                </div>`;
+            }
+
+            async function load() {
+                try {
+                    const res = await fetch('/.netlify/functions/get-signal');
+                    if (!res.ok) throw new Error('not ready');
+                    const data = await res.json();
+                    renderStats(data.stats);
+                    const list = (data.signals || []).filter(s => !s.error);
+                    if (!list.length) {
+                        grid.innerHTML = '<div class="signal-loading">No signals yet — the engine runs on a schedule. Check back soon.</div>';
+                        return;
+                    }
+                    grid.innerHTML = list.map(card).join('');
+                } catch (e) {
+                    grid.innerHTML = '<div class="signal-error">Live signals will appear once the engine has run. (Set GEMINI_API_KEY &amp; deploy — see SIGNAL_ENGINE_SETUP.md)</div>';
+                }
+            }
+
+            load();
+            setInterval(load, 60000); // refresh every minute
+        })();
     </script>
 </body>
 </html>
