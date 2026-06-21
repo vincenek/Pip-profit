@@ -16,7 +16,6 @@
     <meta name="theme-color" content="#2563eb">
   
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <script src="https://js.paystack.co/v1/inline.js"></script>
     <style>
         :root {
             --primary: #2563eb;
@@ -1183,7 +1182,7 @@
                         <div class="input-group">
                             <label for="country">Select Your Country</label>
                             <select id="country">
-                                <option value="NG">Nigeria (₦1500)</option>
+                                <option value="NG">Nigeria (₦500)</option>
                                 <option value="US">United States ($9.99)</option>
                                 <option value="UK">United Kingdom (£7.99)</option>
                                 <option value="EU">Europe (€8.99)</option>
@@ -1192,7 +1191,7 @@
                         </div>
                     </div>
                     
-                    <div class="price" id="dynamicPrice">₦1,500</div>
+                    <div class="price" id="dynamicPrice">₦500</div>
                     
                     <div class="innovation-features">
                         <div class="innovation-card">
@@ -1218,11 +1217,11 @@
                         </div>
                     </div>
                     
-                    <!-- Paystack Payment Button -->
+                    <!-- Mystack Bank Transfer Button -->
                     <button class="btn btn-premium pulse" id="paystackButton" style="width: 100%;">
-                        <i class="fas fa-lock"></i> Subscribe Now with Paystack
+                        <i class="fas fa-university"></i> Subscribe Now via Bank Transfer
                     </button>
-                    <p style="margin-top: 15px; font-size: 0.9rem;">Secure payment powered by Paystack</p>
+                    <p style="margin-top: 15px; font-size: 0.9rem;">Secure payment powered by Mystack</p>
                 </div>
             </div>
         </section>
@@ -1307,13 +1306,13 @@
             <button class="modal-close" id="modalClose">&times;</button>
             <div class="modal-header">
                 <h2>Complete Your Payment</h2>
-                <p>Secure payment powered by Paystack</p>
+                <p>Secure payment powered by Mystack</p>
             </div>
             
             <form class="payment-form" id="paymentForm">
                 <div class="plan-display">
                     <div class="plan-name" id="selectedPlan">Professional Plan</div>
-                    <div class="plan-price" id="planPrice">₦1,500 monthly</div>
+                    <div class="plan-price" id="planPrice">₦500 monthly</div>
                 </div>
                 
                 <div class="input-group">
@@ -1332,9 +1331,34 @@
                 </div>
                 
                 <button type="button" class="btn btn-premium" id="processPayment" style="width: 100%;">
-                    <i class="fas fa-lock"></i> Pay Now
+                    <i class="fas fa-lock"></i> Get Account Details
                 </button>
             </form>
+
+            <!-- Bank transfer instructions (shown after "Get Account Details") -->
+            <div id="transferDetails" style="display: none;">
+                <p style="margin-bottom: 15px;">Transfer the exact amount below, then tap <strong>"I've Sent the Transfer"</strong>. Your premium activates once we confirm payment.</p>
+                <div class="plan-display">
+                    <div style="display:flex; justify-content:space-between; margin-bottom:8px;">
+                        <span>Bank</span><strong id="trBank">—</strong>
+                    </div>
+                    <div style="display:flex; justify-content:space-between; margin-bottom:8px;">
+                        <span>Account Number</span><strong id="trAccount">—</strong>
+                    </div>
+                    <div style="display:flex; justify-content:space-between; margin-bottom:8px;">
+                        <span>Account Name</span><strong id="trName">—</strong>
+                    </div>
+                    <div style="display:flex; justify-content:space-between; margin-bottom:8px;">
+                        <span>Amount</span><strong id="trAmount">—</strong>
+                    </div>
+                    <div style="display:flex; justify-content:space-between;">
+                        <span>Reference / Narration</span><strong id="trReference">—</strong>
+                    </div>
+                </div>
+                <button type="button" class="btn btn-premium" id="confirmTransfer" style="width: 100%; margin-top: 15px;">
+                    <i class="fas fa-check"></i> I've Sent the Transfer
+                </button>
+            </div>
         </div>
     </div>
     
@@ -1378,6 +1402,9 @@
                 paymentModal: document.getElementById('paymentModal'),
                 modalClose: document.getElementById('modalClose'),
                 processPayment: document.getElementById('processPayment'),
+                paymentForm: document.getElementById('paymentForm'),
+                transferDetails: document.getElementById('transferDetails'),
+                confirmTransfer: document.getElementById('confirmTransfer'),
                 countrySelect: document.getElementById('country'),
                 dynamicPrice: document.getElementById('dynamicPrice'),
                 calculateRR: document.getElementById('calculateRR'),
@@ -1421,7 +1448,7 @@
                 isPremiumUser: localStorage.getItem('premiumUser') === 'true',
                 subscriptionExpiry: localStorage.getItem('subscriptionExpiry') || 0,
                 prices: {
-                    'NG': { amount: 150000, currency: 'NGN', display: '₦1,500' },
+                    'NG': { amount: 50000, currency: 'NGN', display: '₦500' },
                     'US': { amount: 999, currency: 'USD', display: '$9.99' },
                     'UK': { amount: 799, currency: 'GBP', display: '£7.99' },
                     'EU': { amount: 899, currency: 'EUR', display: '€8.99' },
@@ -1545,6 +1572,8 @@
                     // Open payment modal
                     this.paystackButton.addEventListener('click', () => {
                         this.updatePlanDisplay();
+                        this.paymentForm.style.display = 'block';
+                        this.transferDetails.style.display = 'none';
                         this.paymentModal.style.display = 'flex';
                     });
                     
@@ -1553,9 +1582,17 @@
                         this.paymentModal.style.display = 'none';
                     });
                     
-                    // Process payment with Paystack
+                    // Request bank-transfer details from Mystack
                     this.processPayment.addEventListener('click', () => {
                         this.processSubscription();
+                    });
+
+                    // Customer says they've completed the transfer
+                    this.confirmTransfer.addEventListener('click', () => {
+                        alert("Thanks! We'll confirm your transfer and unlock premium shortly.");
+                        this.paymentModal.style.display = 'none';
+                        this.activatePremium();
+                        window.location.hash = '#calculator';
                     });
                     
                     // Manage subscription
@@ -1717,47 +1754,56 @@
                     this.rrResult.style.display = 'block';
                 },
                 
-                // Process subscription payment
-                processSubscription() {
+                // Request bank-transfer details from Mystack (via Netlify function)
+                async processSubscription() {
                     const email = document.getElementById('email').value;
                     const name = document.getElementById('name').value;
-                    
+                    const phone = document.getElementById('phone').value;
+
                     if (!email || !name) {
                         alert('Please fill in all required fields');
                         return;
                     }
-                    
-                    // Close modal
-                    this.paymentModal.style.display = 'none';
-                    
-                    // Process payment with Paystack
-                    const handler = PaystackPop.setup({
-                        key: 'pk_test_1f759a668641f37cd1b315c1d9cfa5c01ec2f202',
-                        email: email,
-                        amount: this.currentPayment.amount,
-                        currency: this.currentPayment.currency,
-                        ref: 'PP' + Date.now(),
-                        metadata: {
-                            custom_fields: [
-                                { display_name: "Full Name", variable_name: "full_name", value: name }
-                            ]
-                        },
-                        callback: (response) => {
-                            // Payment successful! Activate premium
-                            this.activatePremium();
-                            
-                            // Show success message
-                            alert('Payment successful! Premium features are now unlocked.');
-                            
-                            // Redirect to calculator
-                            window.location.hash = '#calculator';
-                        },
-                        onClose: () => {
-                            alert('Payment was not completed. You can try again later.');
+
+                    const btn = this.processPayment;
+                    const originalLabel = btn.innerHTML;
+                    btn.disabled = true;
+                    btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Getting account...';
+
+                    try {
+                        const res = await fetch('/.netlify/functions/create-payment', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                email,
+                                name,
+                                phone,
+                                amount: this.currentPayment.amount,
+                                currency: this.currentPayment.currency
+                            })
+                        });
+
+                        const data = await res.json();
+                        if (!res.ok) {
+                            throw new Error(data.error || 'Could not start payment.');
                         }
-                    });
-                    
-                    handler.openIframe();
+
+                        // Show the bank-transfer instructions
+                        document.getElementById('trBank').textContent = data.bankName || '—';
+                        document.getElementById('trAccount').textContent = data.accountNumber || '—';
+                        document.getElementById('trName').textContent = data.accountName || '—';
+                        document.getElementById('trAmount').textContent =
+                            this.currentPayment.display + ' (' + (data.currency || 'NGN') + ')';
+                        document.getElementById('trReference').textContent = data.reference || '—';
+
+                        this.paymentForm.style.display = 'none';
+                        this.transferDetails.style.display = 'block';
+                    } catch (err) {
+                        alert(err.message || 'Something went wrong. Please try again.');
+                    } finally {
+                        btn.disabled = false;
+                        btn.innerHTML = originalLabel;
+                    }
                 },
                 
                 // Activate premium subscription
@@ -2084,8 +2130,7 @@
                             '/style.css',
                             '/app.js',
                             '/manifest.json',
-                            'https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css',
-                            'https://js.paystack.co/v1/inline.js'
+                            'https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css'
                         ];
                         
                         // Install event
