@@ -114,6 +114,8 @@ exports.handler = async () => {
     generatedAt: new Date().toISOString(),
     signals,
     stats: ledger.stats,
+    open: ledger.open,              // currently tracked trades (for duration)
+    history: ledger.closed.slice(0, 25), // resolved trades: hit TP (win) vs SL (loss)
   });
 
   console.log("signal-engine done:", signals.length, "pairs; winRate", ledger.stats.winRate);
@@ -583,7 +585,10 @@ async function askAiForSignal(pair, s) {
     contents: [{ role: "user", parts: [{ text: prompt }] }],
     generationConfig: {
       temperature: 0.3,
-      maxOutputTokens: 2048,
+      // Gemini 2.5 Flash "thinks" by default and that eats the output budget,
+      // leaving no room for the JSON. Disable thinking + give generous room.
+      thinkingConfig: { thinkingBudget: 0 },
+      maxOutputTokens: 8192,
       responseMimeType: "application/json",
       responseSchema,
     },
@@ -609,7 +614,12 @@ async function askAiForSignal(pair, s) {
   const cand = data.candidates && data.candidates[0];
   const part = cand && cand.content && cand.content.parts && cand.content.parts[0];
   if (!part || !part.text) {
-    throw new Error(`Gemini returned no text (finish: ${cand && cand.finishReason})`);
+    const why = cand && cand.finishReason ? cand.finishReason : "unknown";
+    throw new Error(`Gemini returned no text (finish: ${why}) ${JSON.stringify(data).slice(0, 300)}`);
   }
-  return JSON.parse(part.text);
+  try {
+    return JSON.parse(part.text);
+  } catch (e) {
+    throw new Error(`Gemini JSON parse failed: ${part.text.slice(0, 200)}`);
+  }
 }

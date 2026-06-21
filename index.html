@@ -66,6 +66,18 @@
         .reason b { color: var(--text); }
         .meta { font-size: .72rem; color: var(--muted); margin-top: 10px; }
         .empty { grid-column: 1/-1; text-align: center; color: var(--muted); padding: 40px 10px; }
+        .card.err { border-top-color: var(--amber); }
+        .sec-title { font-size: 1.05rem; margin: 30px 0 14px; color: var(--text); font-weight: 700; }
+        .hist { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; padding: 12px 16px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; margin-bottom: 8px; font-size: .85rem; }
+        .hist .res { font-weight: 800; padding: 3px 10px; border-radius: 999px; font-size: .72rem; }
+        .hist .res.win { background: var(--green); color: #04101a; }
+        .hist .res.loss { background: var(--red); color: #fff; }
+        .hist .pr { font-weight: 700; min-width: 70px; }
+        .hist .r { font-weight: 700; }
+        .hist .small { color: var(--muted); font-size: .78rem; }
+        .openrow { display:flex; flex-wrap:wrap; align-items:center; gap:8px 16px; padding:12px 16px; background:var(--panel); border:1px solid var(--line); border-radius:10px; margin-bottom:8px; font-size:.85rem; }
+        .openrow .dir { font-weight:800; font-size:.72rem; padding:3px 10px; border-radius:999px; }
+        .openrow .dir.buy { background:var(--green); color:#04101a; } .openrow .dir.sell { background:var(--red); color:#fff; }
         .disclaimer { color: var(--muted); font-size: .74rem; text-align: center; margin-top: 30px; opacity: .8; }
         a { color: var(--blue); }
     </style>
@@ -88,9 +100,17 @@
         </div>
 
         <div class="track" id="track"></div>
+
+        <h2 class="sec-title">Live signals</h2>
         <div class="grid" id="grid">
             <div class="empty">Loading signals…</div>
         </div>
+
+        <h2 class="sec-title" id="openTitle" style="display:none;">Open positions</h2>
+        <div id="openList"></div>
+
+        <h2 class="sec-title" id="histTitle" style="display:none;">Recent results — which hit TP vs SL</h2>
+        <div id="histList"></div>
 
         <p class="disclaimer">
             Technical research for personal use — not financial advice. Signals are generated,
@@ -103,9 +123,21 @@
         const track = document.getElementById('track');
         const statusEl = document.getElementById('status');
         const runBtn = document.getElementById('runBtn');
+        const openTitle = document.getElementById('openTitle');
+        const openList = document.getElementById('openList');
+        const histTitle = document.getElementById('histTitle');
+        const histList = document.getElementById('histList');
 
         const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c =>
             ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c]));
+
+        function fmtDur(ms) {
+            if (!ms || ms < 0) return '';
+            const h = Math.floor(ms / 3600000);
+            const m = Math.floor((ms % 3600000) / 60000);
+            if (h >= 24) return Math.floor(h / 24) + 'd ' + (h % 24) + 'h';
+            return h > 0 ? h + 'h ' + m + 'm' : m + 'm';
+        }
 
         function renderTrack(stats) {
             if (!stats || !stats.total) {
@@ -164,19 +196,63 @@
             </div>`;
         }
 
+        function errCard(s) {
+            return `<div class="card err">
+                <div class="row"><span class="pair">${esc(s.pair)}</span><span class="badge no_trade">ERROR</span></div>
+                <div class="reason" style="margin-top:10px;color:var(--amber);">${esc(s.error)}</div>
+            </div>`;
+        }
+
+        function openRow(o) {
+            const dur = fmtDur(Date.now() - (o.openedTs || Date.parse(o.openedAt)));
+            return `<div class="openrow">
+                <span class="dir ${esc(o.direction)}">${esc((o.direction||'').toUpperCase())}</span>
+                <span class="pr">${esc(o.pair)}</span>
+                <span class="small">entry <b>${esc(o.entry)}</b> · SL <b>${esc(o.sl)}</b> · TP <b>${esc(o.tp1)}</b></span>
+                <span class="small">open ${esc(dur)}</span>
+            </div>`;
+        }
+
+        function histRow(h) {
+            const win = h.outcome === 'win';
+            const hit = win ? 'hit TP' : (h.outcome === 'loss' ? 'hit SL' : esc(h.outcome));
+            const dur = fmtDur(Date.parse(h.closedAt) - Date.parse(h.openedAt));
+            const r = (h.rMultiple > 0 ? '+' : '') + (h.rMultiple ?? 0) + 'R';
+            return `<div class="hist">
+                <span class="res ${win ? 'win' : 'loss'}">${win ? 'WIN' : 'LOSS'}</span>
+                <span class="pr">${esc(h.pair)}</span>
+                <span class="small">${esc((h.direction||'').toUpperCase())} · ${hit}</span>
+                <span class="small">entry ${esc(h.entry)} → ${win ? 'TP ' + esc(h.tp1) : 'SL ' + esc(h.sl)}</span>
+                <span class="r ${win ? 'pos' : 'neg'}">${esc(r)}</span>
+                <span class="small">lasted ${esc(dur)}</span>
+                <span class="small">closed ${esc(h.closedAt ? new Date(h.closedAt).toLocaleString() : '')}</span>
+            </div>`;
+        }
+
         async function load() {
             try {
                 const res = await fetch('/.netlify/functions/get-signal', { cache: 'no-store' });
                 if (!res.ok) throw new Error('not ready');
                 const data = await res.json();
                 renderTrack(data.stats);
-                const list = (data.signals || []).filter(s => !s.error);
-                grid.innerHTML = list.length
-                    ? list.map(card).join('')
-                    : '<div class="empty">No signals yet — hit “Run now”, or wait for the hourly run.</div>';
+
+                const all = data.signals || [];
+                const ok = all.filter(s => !s.error);
+                const errs = all.filter(s => s.error);
+                grid.innerHTML = (ok.map(card).join('') + errs.map(errCard).join(''))
+                    || '<div class="empty">No signals yet — hit “Run now”, or wait for the hourly run.</div>';
+
+                const open = data.open || [];
+                openTitle.style.display = open.length ? '' : 'none';
+                openList.innerHTML = open.map(openRow).join('');
+
+                const hist = data.history || [];
+                histTitle.style.display = hist.length ? '' : 'none';
+                histList.innerHTML = hist.map(histRow).join('');
+
                 statusEl.textContent = 'updated ' + new Date().toLocaleTimeString();
             } catch (e) {
-                grid.innerHTML = '<div class="empty">No signals yet. Tap “Run now” to generate the first set.<br>(If it errors, check GEMINI_API_KEY in Netlify — see SIGNAL_ENGINE_SETUP.md)</div>';
+                grid.innerHTML = '<div class="empty">No signals yet. Tap “Run now” to generate the first set.<br>(If it errors, the message will show here.)</div>';
             }
         }
 
@@ -186,14 +262,17 @@
             try {
                 const res = await fetch('/.netlify/functions/run-now', { cache: 'no-store' });
                 const data = await res.json();
-                if (data.error || (data.engineResult && data.engineResult.error)) {
-                    statusEl.textContent = 'engine error — see console';
-                    console.error('run-now:', data);
-                }
                 await load();
+                // Whole-engine failure (e.g. missing key, Blobs) shows here.
+                if (data.error) {
+                    grid.innerHTML = `<div class="card err"><b>Engine error:</b><div class="reason" style="color:var(--amber);margin-top:8px;">${esc(data.error)}</div></div>`;
+                    statusEl.textContent = 'engine error';
+                } else {
+                    statusEl.textContent = 'ran ' + new Date().toLocaleTimeString();
+                }
             } catch (e) {
-                statusEl.textContent = 'run failed — see console';
-                console.error(e);
+                statusEl.textContent = 'run failed';
+                grid.innerHTML = `<div class="card err"><b>Run failed:</b><div class="reason" style="color:var(--amber);margin-top:8px;">${esc(String(e))}</div></div>`;
             } finally {
                 runBtn.disabled = false;
             }
