@@ -31,9 +31,10 @@ Everything is computed in code from real OHLC, then handed to the AI (Gemini) as
 |---|---|
 | `netlify/functions/signal-engine.js` | Scheduled function (30s budget). Data → indicators → news → AI → track record. Saves to Netlify Blobs. |
 | `netlify/functions/get-signal.js` | Reads `?pair=EUR/USD` (one) or no param (all signals + stats). |
+| `netlify/functions/run-now.js` | One-click manual trigger — open `/.netlify/functions/run-now` to force a run. |
 | `package.json` | `@netlify/blobs` (free Netlify storage). |
 | `netlify.toml` | Schedules the engine hourly. |
-| `index.html` | In-calculator Insights show the live call; new **Live Signals** dashboard shows all pairs + the track record (premium-gated detail). |
+| `index.html` | Personal **FX Signal Desk** dashboard — all pairs, full trade plans, track record, “Run now” button, auto-refresh. No payments, no gating. |
 
 ## Set your keys in Netlify, then redeploy
 
@@ -68,10 +69,10 @@ The economic calendar needs **no key** — it's a free public feed.
 
 - **All signals + track record:** `https://<site>.netlify.app/.netlify/functions/get-signal`
 - **One pair:** `…/get-signal?pair=EUR/USD`
-- **Force a run now:** Netlify dashboard → **Functions → signal-engine → Run**.
-- **On the site:** scroll to **Live Signals**. Premium users see full trade plans
-  (entry/SL/TP1/TP2/R:R + reasoning); free users see the call but locked detail
-  (a conversion hook for your subscription).
+- **Force a run now (easiest):** open `https://<site>.netlify.app/.netlify/functions/run-now`
+  — runs the engine and shows the result. Or use the **Run now** button on the dashboard.
+- **On the site:** the homepage is the FX Signal Desk — all pairs with full trade
+  plans (entry/SL/TP1/TP2/R:R + reasoning), the track record, and news/regime tags.
 
 ## Schedule
 
