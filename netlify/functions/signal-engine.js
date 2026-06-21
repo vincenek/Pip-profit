@@ -35,7 +35,7 @@
 //   NEWS_WINDOW_MIN  minutes around a high-impact event to blackout (default 60)
 // ---------------------------------------------------------------------------
 
-const { getStore } = require("@netlify/blobs");
+const { getStore, connectLambda } = require("@netlify/blobs");
 
 const PAIRS = (process.env.SIGNAL_PAIRS || "EUR/USD,GBP/USD,USD/JPY")
   .split(",")
@@ -45,11 +45,14 @@ const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-flash-latest";
 const TD_KEY = process.env.TWELVEDATA_API_KEY;
 const NEWS_WINDOW_MIN = Number(process.env.NEWS_WINDOW_MIN || 60);
 
-exports.handler = async () => {
+exports.handler = async (event) => {
   if (!process.env.GEMINI_API_KEY) {
     console.error("signal-engine: GEMINI_API_KEY is not set");
     return { statusCode: 500, body: "GEMINI_API_KEY missing" };
   }
+
+  // Lambda-compat functions must wire up Blobs from the event before getStore().
+  try { if (event && event.blobs) connectLambda(event); } catch (e) { /* noop */ }
 
   const store = getStore("signals");
 

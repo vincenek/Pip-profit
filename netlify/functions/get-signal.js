@@ -5,9 +5,11 @@
 // No secrets here — it's safe to call from the browser.
 // ---------------------------------------------------------------------------
 
-const { getStore } = require("@netlify/blobs");
+const { getStore, connectLambda } = require("@netlify/blobs");
 
 exports.handler = async (event) => {
+  try { if (event && event.blobs) connectLambda(event); } catch (e) { /* noop */ }
+
   const headers = {
     "Content-Type": "application/json",
     "Access-Control-Allow-Origin": "*",

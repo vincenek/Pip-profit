@@ -10,7 +10,7 @@
 // (Each run uses a little of your free Gemini/Twelve Data quota — both generous.)
 // ---------------------------------------------------------------------------
 
-const { getStore } = require("@netlify/blobs");
+const { getStore, connectLambda } = require("@netlify/blobs");
 const engine = require("./signal-engine.js");
 
 exports.handler = async (event) => {
@@ -18,6 +18,10 @@ exports.handler = async (event) => {
     "Content-Type": "application/json",
     "Access-Control-Allow-Origin": "*",
   };
+
+  // Wire up Blobs for this Lambda-compat function (and, via the shared event,
+  // for the engine handler we call below).
+  try { if (event && event.blobs) connectLambda(event); } catch (e) { /* noop */ }
 
   try {
     // Run the full engine pipeline (fetch -> indicators -> news -> Gemini -> grade -> save).
