@@ -66,7 +66,7 @@ exports.handler = async (event) => {
   const reference = "PP-" + Date.now() + "-" + Math.random().toString(36).slice(2, 8).toUpperCase();
 
   try {
-    const account = await createMystackAccount({ email, name, phone, amount, reference });
+    const account = await getMystackAccount();
     return {
       statusCode: 200,
       headers,
@@ -96,57 +96,55 @@ exports.handler = async (event) => {
 // This is the ONE place the Mystack API is called. I couldn't fully read your
 // docs page (it renders as a JS app), so the request/response shape below is a
 // best guess based on what was visible. Adjust the endpoint, body fields, and
-// the response field names (accountNumber / bankName / accountName) to match
-// what Mystack actually returns.
+// the response field names to match what your account's balances endpoint
+// actually returns.
 //
-// If Mystack does NOT support generating a per-payment account via API, just
-// set MYSTACK_ACCOUNT_NUMBER / MYSTACK_BANK_NAME / MYSTACK_ACCOUNT_NAME in
-// Netlify and this function falls back to those static details automatically.
+// HOW MYSTACK ACTUALLY WORKS (from /developers):
+//   Mystack has NO "charge a customer" endpoint. You create ONE account once
+//   (POST /v1/accounts with your BVN + pots, done in the dashboard) and it owns
+//   a fixed NUBAN. EVERY customer transfers to that SAME account number, and the
+//   payment.received webhook tells you money landed. So this function does NOT
+//   create an account per customer — it returns your single collection account.
+//
+// Configure it one of two ways in Netlify:
+//   A) Simplest — set the fixed details directly (read them from your Mystack
+//      dashboard):  MYSTACK_ACCOUNT_NUMBER, MYSTACK_BANK_NAME, MYSTACK_ACCOUNT_NAME
+//   B) Dynamic — set MYSTACK_SECRET_KEY + MYSTACK_ACCOUNT_ID and we fetch the
+//      NUBAN live via GET /v1/accounts/:id/balances.
 // ---------------------------------------------------------------------------
-async function createMystackAccount({ email, name, phone, amount, reference }) {
-  const key = process.env.MYSTACK_SECRET_KEY;
-
-  // Fallback: a single static collection account configured via env vars.
+async function getMystackAccount() {
+  // A) Fixed details from env vars — reliable, no API call needed.
   const staticAccount = {
     accountNumber: process.env.MYSTACK_ACCOUNT_NUMBER,
     bankName: process.env.MYSTACK_BANK_NAME,
     accountName: process.env.MYSTACK_ACCOUNT_NAME,
   };
+  if (staticAccount.accountNumber) return staticAccount;
 
-  if (!key) {
-    if (staticAccount.accountNumber) return staticAccount;
-    throw new Error("MYSTACK_SECRET_KEY (or static MYSTACK_ACCOUNT_* env vars) not configured");
+  // B) Dynamic lookup of your account's NUBAN.
+  const key = process.env.MYSTACK_SECRET_KEY;
+  const accountId = process.env.MYSTACK_ACCOUNT_ID;
+  if (!key || !accountId) {
+    throw new Error(
+      "Set MYSTACK_ACCOUNT_NUMBER/BANK/NAME, or MYSTACK_SECRET_KEY + MYSTACK_ACCOUNT_ID, in Netlify"
+    );
   }
 
-  const res = await fetch(`${API_BASE}/accounts`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${key}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      fullName: name,
-      email,
-      phone,
-      reference,
-      amount, // smallest currency unit (kobo), matching the frontend
-    }),
+  const res = await fetch(`${API_BASE}/accounts/${accountId}/balances`, {
+    headers: { Authorization: `Bearer ${key}` },
   });
-
   if (!res.ok) {
-    // If the API call isn't right yet but you've set static env vars, use those.
-    if (staticAccount.accountNumber) return staticAccount;
     const text = await res.text();
     throw new Error(`Mystack API ${res.status}: ${text}`);
   }
-
   const data = await res.json();
 
-  // Map Mystack's response fields to ours — rename these to match the real API.
+  // >>> CONFIRM these field paths against the real balances response <<<
+  // Mystack returns "bucket balances + NUBANs"; the first pot's NUBAN is used.
+  const pot = (data.pots || data.buckets || data.data || [])[0] || data;
   return {
-    accountNumber: data.accountNumber || data.account_number || staticAccount.accountNumber,
-    bankName: data.bankName || data.bank_name || staticAccount.bankName,
-    accountName: data.accountName || data.account_name || staticAccount.accountName,
-    expiresAt: data.expiresAt || data.expires_at,
+    accountNumber: pot.nuban || pot.accountNumber || pot.account_number,
+    bankName: pot.bankName || pot.bank_name || pot.bank,
+    accountName: pot.accountName || pot.account_name || data.fullName || data.name,
   };
 }

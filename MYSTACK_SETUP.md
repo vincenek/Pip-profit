@@ -18,17 +18,33 @@ Netlify function), never in `index.html`.
 
 Site settings → Environment variables. **Never** commit these or put them in HTML.
 
-| Variable | Required | What it is |
-|---|---|---|
-| `MYSTACK_SECRET_KEY` | yes | Your `msk_live_...` (or `msk_test_...`) key |
-| `MYSTACK_WEBHOOK_SECRET` | recommended | Used to verify webhook signatures |
-| `MYSTACK_API_BASE` | optional | Defaults to `https://api.mystack.app/v1` |
-| `MYSTACK_ACCOUNT_NUMBER` | fallback | A static collection NUBAN, used if the API call isn't wired yet |
-| `MYSTACK_BANK_NAME` | fallback | e.g. `Wema Bank` |
-| `MYSTACK_ACCOUNT_NAME` | fallback | Name shown on the account |
+Mystack has **no per-customer charge endpoint** — you have ONE account with a
+fixed NUBAN, and every customer transfers to it. So set the account details:
 
-If you only set the static `MYSTACK_ACCOUNT_*` vars, the site works immediately
-by showing that fixed account to every customer.
+**Option A (simplest, recommended) — paste the fixed account from your dashboard:**
+
+| Variable | What it is |
+|---|---|
+| `MYSTACK_ACCOUNT_NUMBER` | Your Mystack collection NUBAN |
+| `MYSTACK_BANK_NAME` | e.g. `Wema Bank` |
+| `MYSTACK_ACCOUNT_NAME` | Name shown on the account |
+
+**Option B — look the NUBAN up live via the API:**
+
+| Variable | What it is |
+|---|---|
+| `MYSTACK_SECRET_KEY` | Your `msk_live_...` key |
+| `MYSTACK_ACCOUNT_ID` | The id of your account (from `POST /v1/accounts` / dashboard) |
+
+**Also recommended (for webhook security):**
+
+| Variable | What it is |
+|---|---|
+| `MYSTACK_WEBHOOK_SECRET` | Used to verify webhook signatures |
+| `MYSTACK_API_BASE` | Optional, defaults to `https://api.mystack.app/v1` |
+
+With Option A set, the site works immediately — it shows that fixed account to
+every customer with a unique reference for each.
 
 ## Two things still to confirm against your real docs (`/developers`)
 
