@@ -812,8 +812,10 @@ async function dispatchAlerts(opened, closed, manage = []) {
       );
     } else if (m.type === "breakeven") {
       msgs.push(
-        `🛡️ ${m.pair} ${dir} is +${m.rNow.toFixed(1)}R\n` +
-        `Consider moving your stop to breakeven (${m.entry}) to lock in a risk-free trade.`
+        `🎯 TAKE ACTION ${m.pair} ${dir} is +${m.rNow.toFixed(1)}R\n` +
+        `You've hit +1R. Lock it in: either close the trade now to bank the profit, ` +
+        `or take partial profit and move your stop to breakeven (${m.entry}) so the ` +
+        `rest runs risk-free toward TP2.`
       );
     }
   }
