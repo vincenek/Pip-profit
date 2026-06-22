@@ -129,8 +129,13 @@ exports.handler = async (event) => {
       signals.push({ pair: b.pair, error: aiError || "no signal returned for this pair" });
       continue;
     }
-    // GUARDRAIL: reject the AI's own mistakes (contradictory levels, bad R:R, etc.)
-    // so a malformed signal can never become a tracked trade.
+    // The AI decides DIRECTION + conviction + reasoning (what it's good at). We
+    // compute the exact entry/stop/targets from ATR + structure (what code is
+    // perfect at) — always valid, always proper R:R. No more "auto-rejected".
+    if (signal.direction === "buy" || signal.direction === "sell") {
+      applyComputedLevels(signal, b.snapshot);
+    }
+    // Final sanity guardrail (should always pass for computed levels).
     const invalid = validateSignal(signal, b.snapshot);
     if (invalid) {
       signal.direction = "no_trade";
@@ -741,6 +746,33 @@ function performanceFeedback(ledger) {
   );
 }
 
+// Compute exact, always-valid entry/stop/targets from ATR + structure, so we
+// never depend on a small model's arithmetic. Mutates the signal in place.
+function applyComputedLevels(sig, s) {
+  const price = s.price;
+  const atr = s.atr && s.atr > 0 ? s.atr : price * 0.001;
+  const buy = sig.direction === "buy";
+  // Stop: ~1.5x ATR, but beyond the recent 1H swing against us; clamp 1.5–3.5 ATR.
+  let stopDist = 1.5 * atr;
+  const swing = buy ? s.h1.swingLow : s.h1.swingHigh;
+  if (Number.isFinite(swing)) {
+    const swingDist = Math.abs(price - swing) + 0.3 * atr;
+    stopDist = Math.min(Math.max(stopDist, swingDist), 3.5 * atr);
+  }
+  const entry = price;
+  const sl = buy ? entry - stopDist : entry + stopDist;
+  const tp1 = buy ? entry + 1.8 * stopDist : entry - 1.8 * stopDist; // 1.8:1
+  const tp2 = buy ? entry + 3.0 * stopDist : entry - 3.0 * stopDist; // 3:1
+  const dp = price >= 10 ? 3 : 5; // JPY pairs ~3dp, others ~5dp
+  const rd = (x) => Number(x.toFixed(dp));
+
+  sig.entry_price = rd(entry); sig.stop_loss_price = rd(sl);
+  sig.tp1_price = rd(tp1); sig.tp2_price = rd(tp2);
+  sig.entry = String(rd(entry)); sig.stop_loss = String(rd(sl));
+  sig.take_profit_1 = String(rd(tp1)); sig.take_profit_2 = String(rd(tp2));
+  sig.risk_reward = "1:1.8";
+}
+
 // Deterministic guardrail — reject the AI's own inconsistent/illogical signals.
 function validateSignal(sig, s) {
   if (!sig || sig.direction === "no_trade") return null;
@@ -841,10 +873,9 @@ async function analyzePairs(snapshots, perfFeedback) {
     `sell's TP ABOVE the nearest support. If price is right at opposing structure with no ` +
     `room, return no_trade.\n` +
     `6. Require multi-timeframe confluence (Weekly + Daily + 4H + 1H agree). Marginal = no_trade.\n` +
-    `7. REWARD:RISK IS NON-NEGOTIABLE. TP1 must be at least 1.5x the stop distance ` +
-    `(prefer 2:1). NEVER set TP closer to entry than the stop — risking more than you ` +
-    `aim to make is an automatic no_trade. Size the stop ~1.5x the 1H ATR beyond entry ` +
-    `OR behind the nearest swing level. Give NUMERIC entry/stop/target levels.\n` +
+    `7. The desk computes exact entry/stop/targets from ATR + structure (always ≥1.8:1 ` +
+    `reward) — you do NOT need to get prices right. Focus on DIRECTION, conviction, and ` +
+    `the thesis. You may set the price fields to 0; they will be replaced.\n` +
     `8. SELF-CHECK: in "concerns", honestly state the biggest risk/weakness of THIS exact ` +
     `call (what would make it fail). If the concerns are serious, change it to no_trade. ` +
     `Don't rationalise a weak setup.\n\n` +
