@@ -113,31 +113,8 @@ exports.handler = async (event) => {
     }
   }
 
-  // 2b. SELF-CRITIQUE — risk-manager review can veto/adjust actionable signals.
-  if (Object.keys(signalByPair).length) {
-    const actionable = okBuilt
-      .map((b) => ({ pair: b.pair, signal: signalByPair[b.pair], snapshot: b.snapshot }))
-      .filter((it) => it.signal && (it.signal.direction === "buy" || it.signal.direction === "sell"));
-    if (actionable.length) {
-      try {
-        const reviews = await critiqueSignals(actionable);
-        for (const it of actionable) {
-          const r = reviews[it.pair.toUpperCase()];
-          if (!r) continue;
-          it.signal.critique = r.critique;
-          if (r.verdict === "reject") {
-            it.signal.direction = "no_trade";
-            it.signal.headline = "Vetoed by risk-manager review";
-            it.signal.technical_reasoning = `Risk-manager veto: ${r.critique}. ` + (it.signal.technical_reasoning || "");
-          } else if (typeof r.adjusted_confidence === "number") {
-            it.signal.confidence = r.adjusted_confidence;
-          }
-        }
-      } catch (err) {
-        console.warn("critique pass failed (keeping original signals):", String(err));
-      }
-    }
-  }
+  // (Self-check is now inline in the single AI call via the "concerns" field —
+  // one request keeps us inside the free per-minute token limit.)
 
   // 3. Assemble records, score, track.
   const signals = [];
@@ -812,12 +789,13 @@ const SIGNAL_PROPS = {
   technical_reasoning: STR,
   invalidation: STR,
   news_risk: STR,
+  concerns: STR, // inline self-check: honest risks/weaknesses of this exact call
 };
 const SIGNAL_REQUIRED = [
   "pair", "direction", "confidence", "timeframe", "headline",
   "entry", "entry_price", "stop_loss", "stop_loss_price",
   "take_profit_1", "tp1_price", "take_profit_2", "tp2_price",
-  "risk_reward", "confluence", "technical_reasoning", "invalidation", "news_risk",
+  "risk_reward", "confluence", "technical_reasoning", "invalidation", "news_risk", "concerns",
 ];
 
 function perPairBlock(s) {
@@ -826,24 +804,19 @@ function perPairBlock(s) {
         .map((e) => `  - [${e.impact}] ${e.country} ${e.title} (${e.minutesAway >= 0 ? "in " + e.minutesAway + "m" : Math.abs(e.minutesAway) + "m ago"})`)
         .join("\n")
     : "  none in window";
+  const trend = (t) => (Number.isFinite(t.sma20) ? (t.price > t.sma20 ? "up" : "down") : "?");
+  const ev = s.events.length
+    ? s.events.slice(0, 2).map((e) => `${(e.impact || "")[0]}:${e.country} ${e.minutesAway}m`).join(", ")
+    : "none";
+  // One compact line per pair — minimal tokens, only decision-relevant data.
   return (
-    `=== ${s.pair} ===  PRICE ${s.price}  ATR(1h) ${s.atr}\n` +
-    `Bias: ${s.bias} (score ${s.biasScore}) · Regime: ${s.regime} · ` +
-    `Session: ${s.session.open}${s.session.overlap ? " (peak)" : ""} ${s.session.active ? "ACTIVE" : "thin"} · ` +
-    `NewsBlackout(${NEWS_WINDOW_MIN}m): ${s.newsBlackout}\n` +
-    `Structure: nearest resistance ${s.nearestResistance} · nearest support ${s.nearestSupport} ` +
-    `(keep TP on the right side, with room)\n` +
-    `Events:\n${eventLines}\n` +
-    `Confluence: ${s.confluence.join("; ")}\n` +
-    `${tfLine("W ", s.w1)}\n${tfLine("D ", s.d1)}\n${tfLine("4H", s.h4)}\n${tfLine("1H", s.h1, true)}\n`
+    `${s.pair} px${s.price} atr${s.atr} | bias ${s.bias}(${s.biasScore}) regime ${s.regime} ` +
+    `session ${s.session.active ? "ACTIVE" : "thin"}${s.session.overlap ? "+peak" : ""} news ${s.newsBlackout} | ` +
+    `res ${s.nearestResistance} sup ${s.nearestSupport} | ` +
+    `trend W:${trend(s.w1)} D:${trend(s.d1)} 4H:${trend(s.h4)} | ` +
+    `1H rsi${s.h1.rsi14} macdH${s.h1.macdHist} stochK${s.h1.stochK} swHi${s.h1.swingHigh} swLo${s.h1.swingLow} | ` +
+    `4H rsi${s.h4.rsi14} adx${s.h4.adx} swHi${s.h4.swingHigh} swLo${s.h4.swingLow} | events ${ev}`
   );
-}
-
-// Compact one-line indicator summary (far fewer tokens than full JSON).
-function tfLine(name, t, full) {
-  let s = `${name} px:${t.price} sma20:${t.sma20} sma50:${t.sma50} rsi:${t.rsi14} macdH:${t.macdHist} adx:${t.adx} swHi:${t.swingHigh} swLo:${t.swingLow}`;
-  if (full) s += ` ema20:${t.ema20} atr:${t.atr} bbU:${t.bbUpper} bbL:${t.bbLower} stochK:${t.stochK}`;
-  return s;
 }
 
 async function analyzePairs(snapshots, perfFeedback) {
@@ -871,14 +844,17 @@ async function analyzePairs(snapshots, perfFeedback) {
     `7. REWARD:RISK IS NON-NEGOTIABLE. TP1 must be at least 1.5x the stop distance ` +
     `(prefer 2:1). NEVER set TP closer to entry than the stop — risking more than you ` +
     `aim to make is an automatic no_trade. Size the stop ~1.5x the 1H ATR beyond entry ` +
-    `OR behind the nearest swing level. Give NUMERIC entry/stop/target levels.\n\n` +
+    `OR behind the nearest swing level. Give NUMERIC entry/stop/target levels.\n` +
+    `8. SELF-CHECK: in "concerns", honestly state the biggest risk/weakness of THIS exact ` +
+    `call (what would make it fail). If the concerns are serious, change it to no_trade. ` +
+    `Don't rationalise a weak setup.\n\n` +
     `A skipped trade is a professional result. Technical research, not financial advice.\n\n` +
     blocks +
     `\n\nReturn ONLY a JSON object of this exact shape (one object per pair):\n` +
     `{"signals":[{"pair":"EUR/USD","direction":"buy|sell|no_trade","confidence":0-100,` +
     `"timeframe":"","headline":"","entry":"","entry_price":0,"stop_loss":"","stop_loss_price":0,` +
     `"take_profit_1":"","tp1_price":0,"take_profit_2":"","tp2_price":0,"risk_reward":"",` +
-    `"confluence":[""],"technical_reasoning":"","invalidation":"","news_risk":""}]}`;
+    `"confluence":[""],"technical_reasoning":"","invalidation":"","news_risk":"","concerns":""}]}`;
 
   const responseSchema = {
     type: "OBJECT",

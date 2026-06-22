@@ -193,6 +193,7 @@
                     </div>
                     <div class="reason"><b>Why:</b> ${esc(s.technical_reasoning)}</div>
                     ${s.invalidation ? `<div class="reason"><b>Invalidation:</b> ${esc(s.invalidation)}</div>` : ''}
+                    ${s.concerns ? `<div class="reason" style="opacity:.85;color:var(--amber);"><b>AI self-check:</b> ${esc(s.concerns)}</div>` : ''}
                     ${s.news_risk ? `<div class="reason" style="opacity:.8;"><b>News:</b> ${esc(s.news_risk)}</div>` : ''}`;
             }
             const when = s.generatedAt ? new Date(s.generatedAt).toLocaleString() : '';
