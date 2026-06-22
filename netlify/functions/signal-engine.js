@@ -40,7 +40,7 @@
 
 const { getStore, connectLambda } = require("@netlify/blobs");
 
-const PAIRS = (process.env.SIGNAL_PAIRS || "EUR/USD,GBP/USD,USD/JPY")
+const PAIRS = (process.env.SIGNAL_PAIRS || "EUR/USD,GBP/USD,USD/JPY,AUD/USD,USD/CAD,USD/CHF")
   .split(",")
   .map((p) => p.trim().toUpperCase())
   .filter(Boolean);
@@ -172,22 +172,32 @@ function keyFor(pair) {
 // SNAPSHOT — data + indicators across three timeframes
 // ===========================================================================
 async function buildSnapshot(pair, calendar) {
-  let d1, h4, h1;
+  let d1, h4, h1, w1;
 
   if (TD_KEY) {
-    const base = await twelveData(pair, "1h", 2200); // one call, then resample
+    const base = await twelveData(pair, "1h", 5000); // one call; resample to higher TFs
     h1 = analyse(base);
     h4 = analyse(resample(base, h4Key));
     d1 = analyse(resample(base, d1Key));
+    w1 = analyse(resample(base, w1Key));
   } else {
-    const daily = await frankfurterDaily(pair, 200);
+    const daily = await frankfurterDaily(pair, 300);
     d1 = analyse(daily);
     h4 = analyse(daily);
     h1 = analyse(daily);
+    w1 = d1;
   }
 
   const price = h1.closes[h1.closes.length - 1];
-  const { score, factors, regime } = scoreBias(d1, h4, h1, price);
+  const { score, factors, regime } = scoreBias(w1, d1, h4, h1, price);
+
+  // Nearest structural levels — used to reject entries with no room to target
+  // (e.g. don't buy right under resistance).
+  const levels = [h4.swingHigh, h4.swingLow, d1.swingHigh, d1.swingLow].filter(Number.isFinite);
+  const above = levels.filter((l) => l > price).sort((a, b) => a - b);
+  const below = levels.filter((l) => l < price).sort((a, b) => b - a);
+  const nearestResistance = above[0] || null;
+  const nearestSupport = below[0] || null;
 
   // News blackout: high-impact events for either currency, near now.
   const [c1, c2] = pair.split("/");
@@ -205,6 +215,8 @@ async function buildSnapshot(pair, calendar) {
   return {
     pair,
     price,
+    atr: h1.atr,
+    w1: summarize(w1),
     d1: summarize(d1),
     h4: summarize(h4),
     h1: summarize(h1),
@@ -212,6 +224,8 @@ async function buildSnapshot(pair, calendar) {
     bias: score >= 3 ? "bullish" : score <= -3 ? "bearish" : "mixed",
     regime,
     confluence: factors,
+    nearestResistance: r5(nearestResistance),
+    nearestSupport: r5(nearestSupport),
     events,
     newsBlackout,
     session: sessionInfo(pair),
@@ -220,6 +234,7 @@ async function buildSnapshot(pair, calendar) {
     _h1raw: h1,
   };
 }
+function r5(n) { return n == null ? null : Number(n.toFixed(5)); }
 
 // Liquidity / session awareness — spreads are tightest and moves cleanest when
 // a major session for the pair's currencies is open. Trading dead hours is a
@@ -296,7 +311,7 @@ async function getCalendar() {
   }));
 }
 
-// --- timeframe resampling (1h -> 4h / daily) -------------------------------
+// --- timeframe resampling (1h -> 4h / daily / weekly) ----------------------
 function h4Key(dt) {
   const day = dt.slice(0, 10);
   const hour = Number(dt.slice(11, 13)) || 0;
@@ -304,6 +319,13 @@ function h4Key(dt) {
 }
 function d1Key(dt) {
   return dt.slice(0, 10);
+}
+function w1Key(dt) {
+  // ISO week bucket: year + week number (UTC).
+  const d = new Date(dt.replace(" ", "T") + "Z");
+  const onejan = Date.UTC(d.getUTCFullYear(), 0, 1);
+  const week = Math.floor((d.getTime() - onejan) / (7 * 86400000));
+  return d.getUTCFullYear() + "W" + week;
 }
 function resample(series, keyFn) {
   const { opens, highs, lows, closes, datetimes } = series;
@@ -369,8 +391,8 @@ function summarize(tf) {
   };
 }
 
-// Top-down confluence + regime.
-function scoreBias(d1, h4, h1, price) {
+// Top-down confluence + regime (Weekly -> Daily -> 4H -> 1H).
+function scoreBias(w1, d1, h4, h1, price) {
   let score = 0;
   const factors = [];
   const add = (cond, up, label) => {
@@ -379,7 +401,16 @@ function scoreBias(d1, h4, h1, price) {
     factors.push((up ? "▲ " : "▼ ") + label);
   };
 
-  // Daily trend = the master filter (weighted: counts toward score twice)
+  // Weekly = the dominant trend. Counts double (added twice) so trades that
+  // fight the big-picture trend get a strong negative bias.
+  if (Number.isFinite(w1.sma20) && Number.isFinite(w1.sma50)) {
+    add(w1.sma20 > w1.sma50, true, "Weekly uptrend");
+    add(w1.sma20 > w1.sma50, true, "Weekly uptrend (confirmed)");
+    add(w1.sma20 < w1.sma50, false, "Weekly downtrend");
+    add(w1.sma20 < w1.sma50, false, "Weekly downtrend (confirmed)");
+  }
+
+  // Daily trend = the master intraday filter
   add(d1.sma20 > d1.sma50, true, "Daily uptrend (SMA20>SMA50)");
   add(d1.sma20 < d1.sma50, false, "Daily downtrend (SMA20<SMA50)");
   add(price > d1.sma50, true, "Above Daily SMA50");
@@ -501,6 +532,8 @@ function emptyStats() {
 function trackNewSignal(record, snapshot, ledger) {
   if (!record.direction || record.direction === "no_trade") return false;
   if (!record.entry_price || !record.stop_loss_price || !record.tp1_price) return false;
+  // MINIMISE LOSSES: only actually "take" (track + alert) high-quality setups.
+  if ((record.qualityScore || 0) < NOTIFY_MIN_SCORE) return false;
   // One open signal per pair at a time.
   if (ledger.open.some((o) => o.pair === record.pair)) return false;
   ledger.open.push({
@@ -532,12 +565,15 @@ function evaluateOpenSignals(pair, snapshot, ledger, justClosed, manageAlerts) {
       if (justClosed) justClosed.push(closedRec);
       continue;
     }
-    // Still open → active trade management (exit early / breakeven).
+    // Still open → active trade management (cut losses / trail winners).
     const action = manageOpenTrade(o, snapshot);
     if (action && manageAlerts) {
       manageAlerts.push({ ...action, pair: o.pair, direction: o.direction, entry: o.entry });
       if (action.type === "close") o.warned = true;       // alert once per trade
-      if (action.type === "breakeven") o.breakevenSuggested = true;
+      if (action.type === "trail") {
+        o.lockedR = action.lockedR;                       // remember how much is locked
+        o.trailStop = action.newStop;                     // for dashboard display
+      }
     }
     still.push(o);
   }
@@ -560,6 +596,7 @@ function manageOpenTrade(o, s) {
   // High-impact news now imminent while we're still in.
   const news = s.newsBlackout;
 
+  // CUT LOSSES: thesis broke / heading to stop / news risk → close early.
   if (!o.warned && (biasAgainst || (rNow < -0.7 && momAgainst) || (news && rNow < 0.3))) {
     const reasons = [];
     if (biasAgainst) reasons.push("higher-timeframe bias flipped against the trade");
@@ -567,9 +604,16 @@ function manageOpenTrade(o, s) {
     if (news) reasons.push("high-impact news now imminent");
     return { type: "close", reason: reasons.join("; "), rNow };
   }
-  // In decent profit but no exit reason → suggest protecting it.
-  if (!o.breakevenSuggested && !o.warned && rNow >= 1) {
-    return { type: "breakeven", reason: "trade is +1R in profit", rNow };
+
+  // TRAIL WINNERS: step the stop up as profit grows. lockedTarget is how many R
+  // the suggested stop now protects: 0R (breakeven) at +1R, +1R at +2R, etc.
+  if (!o.warned && rNow >= 1) {
+    const lockedTarget = Math.floor(rNow - 1); // 0 at [1,2), 1 at [2,3), ...
+    const have = o.lockedR == null ? -1 : o.lockedR;
+    if (lockedTarget > have) {
+      const newStop = buy ? o.entry + lockedTarget * risk : o.entry - lockedTarget * risk;
+      return { type: "trail", lockedR: lockedTarget, rNow, newStop: Number(newStop.toFixed(5)) };
+    }
   }
   return null;
 }
@@ -656,13 +700,15 @@ function perPairBlock(s) {
         .join("\n")
     : "  none in window";
   return (
-    `=== ${s.pair} ===  PRICE ${s.price}\n` +
+    `=== ${s.pair} ===  PRICE ${s.price}  ATR(1h) ${s.atr}\n` +
     `Bias: ${s.bias} (score ${s.biasScore}) · Regime: ${s.regime} · ` +
     `Session: ${s.session.open}${s.session.overlap ? " (peak)" : ""} ${s.session.active ? "ACTIVE" : "thin"} · ` +
     `NewsBlackout(${NEWS_WINDOW_MIN}m): ${s.newsBlackout}\n` +
+    `Structure: nearest resistance ${s.nearestResistance} · nearest support ${s.nearestSupport} ` +
+    `(don't target through these — keep TP on the right side with room)\n` +
     `Events:\n${eventLines}\n` +
     `Confluence: ${s.confluence.join("; ")}\n` +
-    `Daily: ${JSON.stringify(s.d1)}\n4H: ${JSON.stringify(s.h4)}\n1H: ${JSON.stringify(s.h1)}\n`
+    `Weekly: ${JSON.stringify(s.w1)}\nDaily: ${JSON.stringify(s.d1)}\n4H: ${JSON.stringify(s.h4)}\n1H: ${JSON.stringify(s.h1)}\n`
   );
 }
 
@@ -672,15 +718,22 @@ async function analyzePairs(snapshots) {
     `You are a senior FX analyst on a rules-based desk. For EACH pair below, decide ` +
     `the single highest-probability trade from the computed indicators ONLY, and ` +
     `return one signal object per pair (include its "pair").\n\n` +
+    `Your priority: PRECISION over quantity. Only output buy/sell when the setup is ` +
+    `genuinely high-probability — otherwise no_trade. A missed trade costs nothing; a ` +
+    `bad trade costs money.\n\n` +
     `HARD RULES (apply per pair):\n` +
-    `1. Trade WITH the Daily trend. Counter-trend = no_trade unless an exceptional ` +
-    `mean-reversion setup at a Bollinger extreme with Stochastic confirmation.\n` +
+    `1. Trade WITH the Weekly AND Daily trend. If Weekly and Daily disagree, or the ` +
+    `trade fights the Weekly trend, return no_trade (unless an exceptional reversal at ` +
+    `a Bollinger extreme with Stochastic + structure confirmation).\n` +
     `2. If Regime is "ranging" (ADX<20), avoid trend trades — prefer no_trade.\n` +
     `3. If NewsBlackout is true, return no_trade (event risk) unless conviction is ` +
     `overwhelming, and say why.\n` +
     `4. Prefer trades when the session is ACTIVE (tight spreads); be cautious in thin hours.\n` +
-    `5. Require multi-timeframe confluence (Daily + 4H + 1H agree). Marginal = no_trade.\n` +
-    `6. Size the stop ~1.5x the 1H ATR beyond entry OR behind the nearest swing level; ` +
+    `5. ROOM TO TARGET: a buy's TP must sit BELOW the nearest resistance (with room); a ` +
+    `sell's TP ABOVE the nearest support. If price is right at opposing structure with no ` +
+    `room, return no_trade.\n` +
+    `6. Require multi-timeframe confluence (Weekly + Daily + 4H + 1H agree). Marginal = no_trade.\n` +
+    `7. Size the stop ~1.5x the 1H ATR beyond entry OR behind the nearest swing level; ` +
     `minimum 1.5:1 reward. Give NUMERIC entry/stop/target levels so outcomes can be graded.\n\n` +
     `A skipped trade is a professional result. Technical research, not financial advice.\n\n` +
     blocks +
@@ -779,12 +832,31 @@ async function callGemini(prompt, responseSchema) {
 // ===========================================================================
 function qualityScore(s, signal, calibration) {
   if (!signal || signal.direction === "no_trade") return 0;
+  const buy = signal.direction === "buy";
   let q = 50;
-  q += Math.min(25, Math.abs(s.biasScore) * 2.5);          // confluence strength
+  q += Math.min(25, Math.abs(s.biasScore) * 2);            // confluence strength
   if (s.regime === "trending") q += 12;                    // trend strength
   else if (s.regime === "ranging") q -= 15;
   const biasBull = s.biasScore > 0;                        // direction agrees w/ bias
-  if ((signal.direction === "buy") === biasBull) q += 6; else q -= 12;
+  if (buy === biasBull) q += 6; else q -= 12;
+
+  // Weekly (dominant) trend agreement — fighting it is a big penalty.
+  if (s.w1 && Number.isFinite(s.w1.sma20) && Number.isFinite(s.w1.sma50)) {
+    const wkBull = s.w1.sma20 > s.w1.sma50;
+    if (buy === wkBull) q += 8; else q -= 14;
+  }
+  // Room to target — penalize entering right into opposing structure.
+  const atr = s.atr || 0;
+  if (atr > 0) {
+    if (buy && s.nearestResistance) {
+      const room = (s.nearestResistance - s.price) / atr;
+      if (room < 1) q -= 14; else if (room > 3) q += 4;
+    } else if (!buy && s.nearestSupport) {
+      const room = (s.price - s.nearestSupport) / atr;
+      if (room < 1) q -= 14; else if (room > 3) q += 4;
+    }
+  }
+
   if (s.session && s.session.overlap) q += 8;              // liquidity / session
   else if (s.session && s.session.active) q += 3;
   else q -= 10;
@@ -810,13 +882,21 @@ async function dispatchAlerts(opened, closed, manage = []) {
         `Reason: ${m.reason}.\nNow ${m.rNow >= 0 ? "+" : ""}${m.rNow.toFixed(1)}R (entry ${m.entry}).\n` +
         `Consider exiting early or tightening your stop.`
       );
-    } else if (m.type === "breakeven") {
-      msgs.push(
-        `🎯 TAKE ACTION ${m.pair} ${dir} is +${m.rNow.toFixed(1)}R\n` +
-        `You've hit +1R. Lock it in: either close the trade now to bank the profit, ` +
-        `or take partial profit and move your stop to breakeven (${m.entry}) so the ` +
-        `rest runs risk-free toward TP2.`
-      );
+    } else if (m.type === "trail") {
+      if (m.lockedR === 0) {
+        msgs.push(
+          `🎯 TAKE ACTION ${m.pair} ${dir} is +${m.rNow.toFixed(1)}R\n` +
+          `You've hit +1R. Lock it in: take partial profit and move your stop to ` +
+          `breakeven (${m.newStop}) so the rest runs risk-free toward TP — or just ` +
+          `close to bank it.`
+        );
+      } else {
+        msgs.push(
+          `📈 TRAIL ${m.pair} ${dir} now +${m.rNow.toFixed(1)}R\n` +
+          `Move your stop up to ${m.newStop} to lock in +${m.lockedR}R and keep ` +
+          `riding the trend toward TP.`
+        );
+      }
     }
   }
   for (const c of closed) {

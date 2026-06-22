@@ -217,9 +217,11 @@
 
         function openRow(o) {
             const dur = fmtDur(Date.now() - (o.openedTs || Date.parse(o.openedAt)));
-            const flag = o.warned
-                ? '<span class="res loss">⚠ CLOSE / REASSESS</span>'
-                : (o.breakevenSuggested ? '<span class="tag warn">🎯 +1R — take profit / breakeven</span>' : '');
+            let flag = '';
+            if (o.warned) flag = '<span class="res loss">⚠ CLOSE / REASSESS</span>';
+            else if (o.lockedR != null) flag = '<span class="tag warn">' +
+                (o.lockedR === 0 ? '🎯 +1R — breakeven' : '📈 trail stop → lock +' + o.lockedR + 'R') +
+                (o.trailStop ? ' @ ' + esc(o.trailStop) : '') + '</span>';
             return `<div class="openrow">
                 <span class="dir ${esc(o.direction)}">${esc((o.direction||'').toUpperCase())}</span>
                 <span class="pr">${esc(o.pair)}</span>
