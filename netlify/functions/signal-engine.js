@@ -75,8 +75,10 @@ exports.handler = async (event) => {
     stats: emptyStats(),
   };
 
-  // Calibration anchor = how the engine has actually done so far (prior stats).
-  const calibration = { winRate: ledger.stats.winRate, total: ledger.stats.total };
+  // ADAPT: the engine's real record, fed back so the AI learns from outcomes,
+  // and per-pair calibration so the quality score reflects where it actually wins.
+  const perfFeedback = performanceFeedback(ledger);
+  const byPairStats = calibrationByPair(ledger);
 
   const justClosed = []; // trades resolved this run (for result alerts)
   const manageAlerts = []; // open trades turning bad / hitting +1R (exit mgmt)
@@ -101,10 +103,10 @@ exports.handler = async (event) => {
   let aiError = null;
   if (okBuilt.length) {
     try {
-      signalByPair = await analyzePairs(okBuilt.map((b) => b.snapshot));
+      signalByPair = await analyzePairs(okBuilt.map((b) => b.snapshot), perfFeedback);
     } catch (err) {
       aiError = String(err);
-      console.error("Gemini batch failed:", aiError);
+      console.error("AI batch failed:", aiError);
     }
   }
 
@@ -121,7 +123,20 @@ exports.handler = async (event) => {
       signals.push({ pair: b.pair, error: aiError || "no signal returned for this pair" });
       continue;
     }
-    const quality = qualityScore(b.snapshot, signal, calibration);
+    // GUARDRAIL: reject the AI's own mistakes (contradictory levels, bad R:R, etc.)
+    // so a malformed signal can never become a tracked trade.
+    const invalid = validateSignal(signal, b.snapshot);
+    if (invalid) {
+      signal.direction = "no_trade";
+      signal.headline = "Signal auto-rejected (failed validation)";
+      signal.technical_reasoning = `Rejected: ${invalid}. ` + (signal.technical_reasoning || "");
+    }
+    // Per-pair calibration once we have a few samples; else overall.
+    const pairCal = byPairStats[b.pair];
+    const cal = pairCal && pairCal.total >= 5
+      ? pairCal
+      : { winRate: ledger.stats.winRate, total: ledger.stats.total };
+    const quality = qualityScore(b.snapshot, signal, cal);
     const record = {
       ...signal,
       pair: b.pair,
@@ -661,6 +676,71 @@ function recomputeStats(ledger) {
   };
 }
 
+// Per-pair win-rate so the quality score can calibrate to where it actually wins.
+function calibrationByPair(ledger) {
+  const out = {};
+  for (const c of ledger.closed) {
+    const k = c.pair;
+    out[k] = out[k] || { wins: 0, total: 0 };
+    out[k].total++;
+    if (c.outcome === "win") out[k].wins++;
+  }
+  for (const k of Object.keys(out)) {
+    out[k].winRate = out[k].total ? Math.round((out[k].wins / out[k].total) * 100) : 0;
+  }
+  return out;
+}
+
+// Plain-language results summary fed back into the AI prompt so it ADAPTS —
+// gets stricter where it's losing, leans into what's working.
+function performanceFeedback(ledger) {
+  const closed = ledger.closed;
+  if (!closed.length) return "No closed trades yet — no performance history to learn from.";
+  const byPair = {};
+  for (const c of closed) {
+    const k = c.pair;
+    byPair[k] = byPair[k] || { w: 0, l: 0, r: 0 };
+    if (c.outcome === "win") byPair[k].w++;
+    else if (c.outcome === "loss") byPair[k].l++;
+    byPair[k].r += c.rMultiple || 0;
+  }
+  const lines = Object.entries(byPair).map(([p, v]) => {
+    const n = v.w + v.l;
+    const wr = n ? Math.round((v.w / n) * 100) : 0;
+    return `${p} ${v.w}W/${v.l}L (${wr}%, ${v.r >= 0 ? "+" : ""}${v.r.toFixed(1)}R)`;
+  });
+  const o = ledger.stats;
+  return (
+    `Overall ${o.winRate}% win, ${o.avgR >= 0 ? "+" : ""}${o.avgR}R avg over ${o.total} trades. ` +
+    `By pair: ${lines.join(" · ")}.\n` +
+    `Use this: be MORE selective (or no_trade) on pairs/directions with a poor recent record; ` +
+    `keep taking the setups that have been working. Do not repeat losing patterns.`
+  );
+}
+
+// Deterministic guardrail — reject the AI's own inconsistent/illogical signals.
+function validateSignal(sig, s) {
+  if (!sig || sig.direction === "no_trade") return null;
+  const e = sig.entry_price, sl = sig.stop_loss_price, t1 = sig.tp1_price, t2 = sig.tp2_price;
+  for (const n of [e, sl, t1, t2]) {
+    if (typeof n !== "number" || !Number.isFinite(n) || n <= 0) return "non-numeric / invalid price levels";
+  }
+  const buy = sig.direction === "buy";
+  if (buy && !(sl < e && e < t1 && t1 <= t2)) return "buy levels out of order (need SL < entry < TP1 ≤ TP2)";
+  if (!buy && !(sl > e && e > t1 && t1 >= t2)) return "sell levels out of order (need SL > entry > TP1 ≥ TP2)";
+  const risk = Math.abs(e - sl);
+  if (risk <= 0) return "zero risk (entry equals stop)";
+  const rr = Math.abs(t1 - e) / risk;
+  if (rr < 1.2) return `reward:risk too low (${rr.toFixed(2)}:1)`;
+  if (s.price && Math.abs(e - s.price) / s.price > 0.03) return "entry too far from current price";
+  if (s.atr) {
+    const slAtr = risk / s.atr;
+    if (slAtr < 0.3) return "stop too tight (<0.3 ATR — likely noise)";
+    if (slAtr > 8) return "stop too wide (>8 ATR)";
+  }
+  return null;
+}
+
 // ===========================================================================
 // THE BRAIN — ONE Gemini call analyses ALL pairs (quota-efficient)
 // ===========================================================================
@@ -712,12 +792,13 @@ function perPairBlock(s) {
   );
 }
 
-async function analyzePairs(snapshots) {
+async function analyzePairs(snapshots, perfFeedback) {
   const blocks = snapshots.map(perPairBlock).join("\n");
   const prompt =
     `You are a senior FX analyst on a rules-based desk. For EACH pair below, decide ` +
     `the single highest-probability trade from the computed indicators ONLY, and ` +
     `return one signal object per pair (include its "pair").\n\n` +
+    (perfFeedback ? `PERFORMANCE FEEDBACK (learn from your own results):\n${perfFeedback}\n\n` : "") +
     `Your priority: PRECISION over quantity. Only output buy/sell when the setup is ` +
     `genuinely high-probability — otherwise no_trade. A missed trade costs nothing; a ` +
     `bad trade costs money.\n\n` +
