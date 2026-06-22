@@ -41,9 +41,13 @@ const PAIRS = (process.env.SIGNAL_PAIRS || "EUR/USD,GBP/USD,USD/JPY")
   .split(",")
   .map((p) => p.trim().toUpperCase())
   .filter(Boolean);
-const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-flash-latest";
+// gemini-2.0-flash has a large free daily quota; gemini-flash-latest now points
+// to 3.5-flash whose free tier is only ~20 requests/day (causes 429s).
+const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-2.0-flash";
 const TD_KEY = process.env.TWELVEDATA_API_KEY;
 const NEWS_WINDOW_MIN = Number(process.env.NEWS_WINDOW_MIN || 60);
+// Only alert (and surface as high-conviction) signals at/above this quality score.
+const NOTIFY_MIN_SCORE = Number(process.env.NOTIFY_MIN_SCORE || 65);
 
 exports.handler = async (event) => {
   if (!process.env.GEMINI_API_KEY) {
@@ -69,31 +73,56 @@ exports.handler = async (event) => {
     stats: emptyStats(),
   };
 
-  // Build everything per pair in parallel.
+  // Calibration anchor = how the engine has actually done so far (prior stats).
+  const calibration = { winRate: ledger.stats.winRate, total: ledger.stats.total };
+
+  const justClosed = []; // trades resolved this run (for result alerts)
+
+  // 1. Build snapshots + grade open trades in parallel (NO AI yet — just data).
   const built = await Promise.all(
     PAIRS.map(async (pair) => {
       try {
         const snapshot = await buildSnapshot(pair, calendar);
-        // Grade any open signal for this pair against the fresh candles first.
-        evaluateOpenSignals(pair, snapshot, ledger);
-        const signal = await askAiForSignal(pair, snapshot);
-        return { pair, snapshot, signal };
+        evaluateOpenSignals(pair, snapshot, ledger, justClosed);
+        return { pair, snapshot };
       } catch (err) {
-        console.error(`${pair} failed:`, err);
+        console.error(`${pair} data failed:`, err);
         return { pair, error: String(err) };
       }
     })
   );
 
+  // 2. ONE Gemini call for ALL pairs — 3x fewer requests = stays in free quota.
+  const okBuilt = built.filter((b) => !b.error);
+  let signalByPair = {};
+  let aiError = null;
+  if (okBuilt.length) {
+    try {
+      signalByPair = await analyzePairs(okBuilt.map((b) => b.snapshot));
+    } catch (err) {
+      aiError = String(err);
+      console.error("Gemini batch failed:", aiError);
+    }
+  }
+
+  // 3. Assemble records, score, track.
   const signals = [];
+  const justOpened = []; // new actionable signals this run (for entry alerts)
   for (const b of built) {
     if (b.error) {
       signals.push({ pair: b.pair, error: b.error });
       continue;
     }
+    const signal = signalByPair[b.pair];
+    if (!signal) {
+      signals.push({ pair: b.pair, error: aiError || "no signal returned for this pair" });
+      continue;
+    }
+    const quality = qualityScore(b.snapshot, signal, calibration);
     const record = {
-      ...b.signal,
+      ...signal,
       pair: b.pair,
+      qualityScore: quality,
       generatedAt: new Date().toISOString(),
       snapshot: {
         price: b.snapshot.price,
@@ -101,14 +130,14 @@ exports.handler = async (event) => {
         biasScore: b.snapshot.biasScore,
         regime: b.snapshot.regime,
         newsBlackout: b.snapshot.newsBlackout,
+        session: b.snapshot.session,
         upcomingEvents: b.snapshot.events.slice(0, 4),
       },
     };
     await store.setJSON(`pair:${keyFor(b.pair)}`, record);
     signals.push(record);
 
-    // Track new actionable signals (one open per pair at a time).
-    trackNewSignal(record, b.snapshot, ledger);
+    if (trackNewSignal(record, b.snapshot, ledger)) justOpened.push(record);
   }
 
   recomputeStats(ledger);
@@ -117,11 +146,18 @@ exports.handler = async (event) => {
     generatedAt: new Date().toISOString(),
     signals,
     stats: ledger.stats,
+    calibration: ledger.stats, // historical hit-rate the dashboard surfaces
     open: ledger.open,              // currently tracked trades (for duration)
     history: ledger.closed.slice(0, 25), // resolved trades: hit TP (win) vs SL (loss)
   });
 
-  console.log("signal-engine done:", signals.length, "pairs; winRate", ledger.stats.winRate);
+  // Notifications: alert on result of closed trades + new high-quality entries.
+  await dispatchAlerts(justOpened, justClosed);
+
+  console.log(
+    "signal-engine done:", signals.length, "pairs; winRate", ledger.stats.winRate,
+    "| opened", justOpened.length, "closed", justClosed.length
+  );
   return { statusCode: 200, body: JSON.stringify({ count: signals.length }) };
 };
 
@@ -175,10 +211,33 @@ async function buildSnapshot(pair, calendar) {
     confluence: factors,
     events,
     newsBlackout,
+    session: sessionInfo(pair),
     hasIntraday: !!TD_KEY,
     // raw arrays kept for signal evaluation
     _h1raw: h1,
   };
+}
+
+// Liquidity / session awareness — spreads are tightest and moves cleanest when
+// a major session for the pair's currencies is open. Trading dead hours is a
+// common way to get chopped up, so we factor this into the quality score.
+function sessionInfo(pair) {
+  const h = new Date().getUTCHours();
+  const london = h >= 7 && h < 16;   // London
+  const ny = h >= 12 && h < 21;      // New York
+  const tokyo = h >= 23 || h < 8;    // Tokyo
+  const [b, q] = pair.split("/");
+  const hasJPY = b === "JPY" || q === "JPY";
+  const hasUSDorEUR = /USD|EUR|GBP|CHF|CAD/.test(pair);
+  let active = false;
+  const names = [];
+  if (london) names.push("London");
+  if (ny) names.push("New York");
+  if (tokyo) names.push("Tokyo");
+  if (hasJPY) active = tokyo || london || ny;
+  else active = (london || ny) && hasUSDorEUR;
+  const overlap = london && ny; // London/NY overlap = peak liquidity
+  return { active, overlap, open: names.join("+") || "off-hours" };
 }
 
 // --- Twelve Data ------------------------------------------------------------
@@ -437,10 +496,10 @@ function emptyStats() {
 }
 
 function trackNewSignal(record, snapshot, ledger) {
-  if (!record.direction || record.direction === "no_trade") return;
-  if (!record.entry_price || !record.stop_loss_price || !record.tp1_price) return;
+  if (!record.direction || record.direction === "no_trade") return false;
+  if (!record.entry_price || !record.stop_loss_price || !record.tp1_price) return false;
   // One open signal per pair at a time.
-  if (ledger.open.some((o) => o.pair === record.pair)) return;
+  if (ledger.open.some((o) => o.pair === record.pair)) return false;
   ledger.open.push({
     id: `${keyFor(record.pair)}-${Date.now()}`,
     pair: record.pair,
@@ -448,20 +507,27 @@ function trackNewSignal(record, snapshot, ledger) {
     entry: record.entry_price,
     sl: record.stop_loss_price,
     tp1: record.tp1_price,
+    tp2: record.tp2_price,
+    timeframe: record.timeframe,
+    qualityScore: record.qualityScore,
     openedAt: record.generatedAt,
     openedTs: Date.parse(record.generatedAt),
   });
+  return true;
 }
 
-function evaluateOpenSignals(pair, snapshot, ledger) {
+function evaluateOpenSignals(pair, snapshot, ledger, justClosed) {
   const raw = snapshot._h1raw;
   if (!raw || !raw.datetimes) return;
   const still = [];
   for (const o of ledger.open) {
     if (o.pair !== pair) { still.push(o); continue; }
     const result = checkOutcome(o, raw);
-    if (result) ledger.closed.unshift({ ...o, ...result, closedAt: new Date().toISOString() });
-    else still.push(o);
+    if (result) {
+      const closedRec = { ...o, ...result, closedAt: new Date().toISOString() };
+      ledger.closed.unshift(closedRec);
+      if (justClosed) justClosed.push(closedRec);
+    } else still.push(o);
   }
   ledger.open = ledger.open.filter((o) => o.pair !== pair).concat(still.filter((o) => o.pair === pair));
   // cap closed history
@@ -512,117 +578,213 @@ function recomputeStats(ledger) {
 }
 
 // ===========================================================================
-// THE BRAIN — Gemini synthesises numbers + news into a reasoned trade
+// THE BRAIN — ONE Gemini call analyses ALL pairs (quota-efficient)
 // ===========================================================================
-async function askAiForSignal(pair, s) {
+const NUM = { type: "NUMBER" };
+const STR = { type: "STRING" };
+const SIGNAL_PROPS = {
+  pair: STR,
+  direction: { type: "STRING", enum: ["buy", "sell", "no_trade"] },
+  confidence: { type: "INTEGER" },
+  timeframe: STR,
+  headline: STR,
+  entry: STR,
+  entry_price: NUM,
+  stop_loss: STR,
+  stop_loss_price: NUM,
+  take_profit_1: STR,
+  tp1_price: NUM,
+  take_profit_2: STR,
+  tp2_price: NUM,
+  risk_reward: STR,
+  confluence: { type: "ARRAY", items: STR },
+  technical_reasoning: STR,
+  invalidation: STR,
+  news_risk: STR,
+};
+const SIGNAL_REQUIRED = [
+  "pair", "direction", "confidence", "timeframe", "headline",
+  "entry", "entry_price", "stop_loss", "stop_loss_price",
+  "take_profit_1", "tp1_price", "take_profit_2", "tp2_price",
+  "risk_reward", "confluence", "technical_reasoning", "invalidation", "news_risk",
+];
+
+function perPairBlock(s) {
   const eventLines = s.events.length
     ? s.events
         .map((e) => `  - [${e.impact}] ${e.country} ${e.title} (${e.minutesAway >= 0 ? "in " + e.minutesAway + "m" : Math.abs(e.minutesAway) + "m ago"})`)
         .join("\n")
     : "  none in window";
+  return (
+    `=== ${s.pair} ===  PRICE ${s.price}\n` +
+    `Bias: ${s.bias} (score ${s.biasScore}) · Regime: ${s.regime} · ` +
+    `Session: ${s.session.open}${s.session.overlap ? " (peak)" : ""} ${s.session.active ? "ACTIVE" : "thin"} · ` +
+    `NewsBlackout(${NEWS_WINDOW_MIN}m): ${s.newsBlackout}\n` +
+    `Events:\n${eventLines}\n` +
+    `Confluence: ${s.confluence.join("; ")}\n` +
+    `Daily: ${JSON.stringify(s.d1)}\n4H: ${JSON.stringify(s.h4)}\n1H: ${JSON.stringify(s.h1)}\n`
+  );
+}
 
-  const snap =
-    `PAIR: ${pair}   PRICE: ${s.price}\n` +
-    `DETERMINISTIC BIAS: ${s.bias} (score ${s.biasScore})   REGIME: ${s.regime}\n` +
-    `NEWS BLACKOUT (high-impact event within ${NEWS_WINDOW_MIN}m): ${s.newsBlackout}\n` +
-    `UPCOMING / RECENT EVENTS:\n${eventLines}\n\n` +
-    `CONFLUENCE:\n- ${s.confluence.join("\n- ")}\n\n` +
-    `DAILY (master trend):\n${JSON.stringify(s.d1)}\n\n` +
-    `4H (structure):\n${JSON.stringify(s.h4)}\n\n` +
-    `1H (trigger):\n${JSON.stringify(s.h1)}\n\n` +
-    (s.hasIntraday
-      ? `Size the stop ~1.5x the 1h ATR beyond entry OR behind the nearest swing ` +
-        `level — whichever is the sounder structural stop. Minimum 1.5:1 reward.`
-      : `NOTE: daily-close data only (no intraday/ATR). Rely on swing levels; be conservative.`);
-
+async function analyzePairs(snapshots) {
+  const blocks = snapshots.map(perPairBlock).join("\n");
   const prompt =
-    `You are a senior FX analyst on a rules-based desk. Decide the single highest-` +
-    `probability trade for ${pair} from the computed indicators ONLY.\n\n` +
-    `HARD RULES:\n` +
+    `You are a senior FX analyst on a rules-based desk. For EACH pair below, decide ` +
+    `the single highest-probability trade from the computed indicators ONLY, and ` +
+    `return one signal object per pair (include its "pair").\n\n` +
+    `HARD RULES (apply per pair):\n` +
     `1. Trade WITH the Daily trend. Counter-trend = no_trade unless an exceptional ` +
     `mean-reversion setup at a Bollinger extreme with Stochastic confirmation.\n` +
-    `2. If REGIME is "ranging" (ADX<20), avoid trend trades — prefer no_trade or a ` +
-    `range/mean-reversion play only.\n` +
-    `3. If NEWS BLACKOUT is true, return no_trade (event risk) unless conviction is ` +
+    `2. If Regime is "ranging" (ADX<20), avoid trend trades — prefer no_trade.\n` +
+    `3. If NewsBlackout is true, return no_trade (event risk) unless conviction is ` +
     `overwhelming, and say why.\n` +
-    `4. Require multi-timeframe confluence (Daily + 4h + 1h agree). Marginal = no_trade.\n` +
-    `5. Provide NUMERIC levels (numbers, not text) for entry/stop/targets so the ` +
-    `engine can grade the outcome.\n\n` +
-    `A skipped trade is a professional result. This is technical research, not ` +
-    `financial advice.\n\n${snap}`;
+    `4. Prefer trades when the session is ACTIVE (tight spreads); be cautious in thin hours.\n` +
+    `5. Require multi-timeframe confluence (Daily + 4H + 1H agree). Marginal = no_trade.\n` +
+    `6. Size the stop ~1.5x the 1H ATR beyond entry OR behind the nearest swing level; ` +
+    `minimum 1.5:1 reward. Give NUMERIC entry/stop/target levels so outcomes can be graded.\n\n` +
+    `A skipped trade is a professional result. Technical research, not financial advice.\n\n` +
+    blocks;
 
-  // Gemini structured-output schema (OpenAPI subset: uppercase types, no
-  // additionalProperties). responseMimeType=application/json forces clean JSON.
-  const NUM = { type: "NUMBER" };
-  const STR = { type: "STRING" };
   const responseSchema = {
     type: "OBJECT",
     properties: {
-      direction: { type: "STRING", enum: ["buy", "sell", "no_trade"] },
-      confidence: { type: "INTEGER" },
-      timeframe: STR,
-      headline: STR,
-      entry: STR,
-      entry_price: NUM,
-      stop_loss: STR,
-      stop_loss_price: NUM,
-      take_profit_1: STR,
-      tp1_price: NUM,
-      take_profit_2: STR,
-      tp2_price: NUM,
-      risk_reward: STR,
-      confluence: { type: "ARRAY", items: STR },
-      technical_reasoning: STR,
-      invalidation: STR,
-      news_risk: STR,
+      signals: { type: "ARRAY", items: { type: "OBJECT", properties: SIGNAL_PROPS, required: SIGNAL_REQUIRED } },
     },
-    required: [
-      "direction", "confidence", "timeframe", "headline",
-      "entry", "entry_price", "stop_loss", "stop_loss_price",
-      "take_profit_1", "tp1_price", "take_profit_2", "tp2_price",
-      "risk_reward", "confluence", "technical_reasoning", "invalidation", "news_risk",
-    ],
+    required: ["signals"],
   };
 
-  const body = {
-    contents: [{ role: "user", parts: [{ text: prompt }] }],
-    generationConfig: {
-      temperature: 0.3,
-      // Gemini 2.5 Flash "thinks" by default and that eats the output budget,
-      // leaving no room for the JSON. Disable thinking + give generous room.
-      thinkingConfig: { thinkingBudget: 0 },
-      maxOutputTokens: 8192,
-      responseMimeType: "application/json",
-      responseSchema,
-    },
+  const parsed = await callGemini(prompt, responseSchema);
+  const out = {};
+  for (const sig of parsed.signals || []) {
+    if (sig && sig.pair) out[sig.pair.toUpperCase()] = sig;
+  }
+  return out;
+}
+
+async function callGemini(prompt, responseSchema) {
+  const generationConfig = {
+    temperature: 0.3,
+    maxOutputTokens: 8192,
+    responseMimeType: "application/json",
+    responseSchema,
   };
+  // Thinking-capable models (2.5 / 3.x / *-latest) burn the output budget on
+  // hidden thinking — disable it. 2.0-flash has no thinking, so we omit the flag.
+  if (/2\.5|gemini-3|3\.5|flash-latest|thinking/.test(GEMINI_MODEL)) {
+    generationConfig.thinkingConfig = { thinkingBudget: 0 };
+  }
 
-  const url =
-    `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
-
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
   const res = await fetch(url, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "X-goog-api-key": process.env.GEMINI_API_KEY,
-    },
-    body: JSON.stringify(body),
+    headers: { "Content-Type": "application/json", "X-goog-api-key": process.env.GEMINI_API_KEY },
+    body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: prompt }] }], generationConfig }),
   });
   if (!res.ok) throw new Error(`Gemini API ${res.status}: ${await res.text()}`);
   const data = await res.json();
-
   if (data.promptFeedback && data.promptFeedback.blockReason) {
     throw new Error(`Gemini blocked: ${data.promptFeedback.blockReason}`);
   }
   const cand = data.candidates && data.candidates[0];
   const part = cand && cand.content && cand.content.parts && cand.content.parts[0];
   if (!part || !part.text) {
-    const why = cand && cand.finishReason ? cand.finishReason : "unknown";
-    throw new Error(`Gemini returned no text (finish: ${why}) ${JSON.stringify(data).slice(0, 300)}`);
+    throw new Error(`Gemini returned no text (finish: ${cand && cand.finishReason}) ${JSON.stringify(data).slice(0, 300)}`);
   }
   try {
     return JSON.parse(part.text);
   } catch (e) {
     throw new Error(`Gemini JSON parse failed: ${part.text.slice(0, 200)}`);
   }
+}
+
+// ===========================================================================
+// QUALITY SCORE — objective 0-100, computed in code, blended with real history
+// ===========================================================================
+function qualityScore(s, signal, calibration) {
+  if (!signal || signal.direction === "no_trade") return 0;
+  let q = 50;
+  q += Math.min(25, Math.abs(s.biasScore) * 2.5);          // confluence strength
+  if (s.regime === "trending") q += 12;                    // trend strength
+  else if (s.regime === "ranging") q -= 15;
+  const biasBull = s.biasScore > 0;                        // direction agrees w/ bias
+  if ((signal.direction === "buy") === biasBull) q += 6; else q -= 12;
+  if (s.session && s.session.overlap) q += 8;              // liquidity / session
+  else if (s.session && s.session.active) q += 3;
+  else q -= 10;
+  if (s.newsBlackout) q -= 18;                             // event risk
+  if (typeof signal.confidence === "number") q += (signal.confidence - 60) * 0.15;
+  if (calibration && calibration.total >= 10) {            // blend with real win-rate
+    q = q * 0.7 + calibration.winRate * 0.3;
+  }
+  return Math.max(0, Math.min(100, Math.round(q)));
+}
+
+// ===========================================================================
+// NOTIFICATIONS — Telegram / WhatsApp(CallMeBot) / Email(Resend), all optional
+// ===========================================================================
+async function dispatchAlerts(opened, closed) {
+  const msgs = [];
+  for (const c of closed) {
+    const win = c.outcome === "win";
+    msgs.push(
+      `${win ? "✅ WIN" : "❌ LOSS"} ${c.pair} ${String(c.direction || "").toUpperCase()} ` +
+      `${win ? "hit TP" : "hit SL"} (${c.rMultiple > 0 ? "+" : ""}${c.rMultiple}R)`
+    );
+  }
+  for (const o of opened) {
+    if ((o.qualityScore || 0) < NOTIFY_MIN_SCORE) continue; // only quality entries alert
+    msgs.push(formatEntryAlert(o));
+  }
+  if (!msgs.length) return;
+  const text = "📊 FX Signal Desk\n\n" + msgs.join("\n\n");
+  await Promise.all([
+    sendTelegram(text).catch((e) => console.warn("telegram:", String(e))),
+    sendWhatsApp(text).catch((e) => console.warn("whatsapp:", String(e))),
+    sendEmail("FX Signal Desk alert", text).catch((e) => console.warn("email:", String(e))),
+  ]);
+}
+
+function formatEntryAlert(s) {
+  const arrow = s.direction === "buy" ? "🟢 BUY" : "🔴 SELL";
+  return (
+    `${arrow} ${s.pair}  (score ${s.qualityScore})\n` +
+    `Entry ${s.entry}\nStop ${s.stop_loss}\nTP1 ${s.take_profit_1}   TP2 ${s.take_profit_2}\n` +
+    `R:R ${s.risk_reward}  ·  ${s.timeframe || ""}\n${s.technical_reasoning || s.headline || ""}`
+  );
+}
+
+async function sendTelegram(text) {
+  const token = process.env.TELEGRAM_BOT_TOKEN;
+  const chat = process.env.TELEGRAM_CHAT_ID;
+  if (!token || !chat) return;
+  const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ chat_id: chat, text, disable_web_page_preview: true }),
+  });
+  if (!res.ok) throw new Error(`Telegram ${res.status}: ${await res.text()}`);
+}
+
+async function sendWhatsApp(text) {
+  const phone = process.env.CALLMEBOT_PHONE;
+  const key = process.env.CALLMEBOT_APIKEY;
+  if (!phone || !key) return;
+  const url =
+    `https://api.callmebot.com/whatsapp.php?phone=${encodeURIComponent(phone)}` +
+    `&text=${encodeURIComponent(text)}&apikey=${encodeURIComponent(key)}`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`CallMeBot ${res.status}`);
+}
+
+async function sendEmail(subject, text) {
+  const key = process.env.RESEND_API_KEY;
+  const to = process.env.NOTIFY_EMAIL_TO;
+  if (!key || !to) return;
+  const from = process.env.NOTIFY_EMAIL_FROM || "FX Signal Desk <onboarding@resend.dev>";
+  const res = await fetch("https://api.resend.com/emails", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ from, to, subject, text }),
+  });
+  if (!res.ok) throw new Error(`Resend ${res.status}: ${await res.text()}`);
 }

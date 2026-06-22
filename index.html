@@ -95,8 +95,9 @@
         </header>
         <div class="sub">
             Personal multi-timeframe forex signals — Daily → 4H → 1H, ADX trend filter,
-            economic-calendar news blackout, ATR-based stops, self-graded track record.
-            Auto-refreshes every minute.
+            session/liquidity + economic-calendar awareness, ATR-based stops, and an
+            objective <b>quality score</b> blended with the engine's real win-rate.
+            Optional Telegram/WhatsApp/email alerts. Auto-refreshes every minute.
         </div>
 
         <div class="track" id="track"></div>
@@ -161,12 +162,15 @@
             const dir = s.direction || 'no_trade';
             const label = dir.toUpperCase().replace('_', ' ');
             const conf = typeof s.confidence === 'number' ? s.confidence : 0;
+            const score = typeof s.qualityScore === 'number' ? s.qualityScore : 0;
             const snap = s.snapshot || {};
             const tags = [];
             if (snap.regime) tags.push(`<span class="tag">${esc(snap.regime)}</span>`);
+            if (snap.session && snap.session.open) tags.push(`<span class="tag">${esc(snap.session.open)}${snap.session.active ? '' : ' · thin'}</span>`);
             if (snap.newsBlackout) tags.push('<span class="tag warn">⚠ news window</span>');
             if (s.risk_reward) tags.push(`<span class="tag">R:R ${esc(s.risk_reward)}</span>`);
             tags.push(`<span class="tag">conviction ${conf}%</span>`);
+            const scoreColor = score >= 75 ? 'var(--green)' : score >= 60 ? 'var(--blue)' : score > 0 ? 'var(--amber)' : 'var(--muted)';
 
             let body;
             if (dir === 'no_trade') {
@@ -186,10 +190,12 @@
                     ${s.news_risk ? `<div class="reason" style="opacity:.8;"><b>News:</b> ${esc(s.news_risk)}</div>` : ''}`;
             }
             const when = s.generatedAt ? new Date(s.generatedAt).toLocaleString() : '';
+            const scoreBadge = dir === 'no_trade' ? ''
+                : `<span class="badge" style="background:${scoreColor};color:#04101a;">SCORE ${score}</span>`;
             return `<div class="card ${dir}">
-                <div class="row"><span class="pair">${esc(s.pair)}</span><span class="badge ${dir}">${esc(label)}</span></div>
+                <div class="row"><span class="pair">${esc(s.pair)}</span><span>${scoreBadge} <span class="badge ${dir}">${esc(label)}</span></span></div>
                 <div class="headline">${esc(s.headline || '')}</div>
-                <div class="conf"><i style="width:${conf}%"></i></div>
+                <div class="conf"><i style="width:${score || conf}%;background:${scoreColor};"></i></div>
                 <div class="tags">${tags.join('')}</div>
                 ${body}
                 <div class="meta">updated ${esc(when)}</div>
