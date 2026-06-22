@@ -945,7 +945,9 @@ async function callGroq(prompt) {
       messages: [{ role: "user", content: prompt }],
       response_format: { type: "json_object" },
       temperature: 0.3,
-      max_tokens: 4096,
+      // Groq free tier counts prompt + max_tokens against the 6k/min limit, so
+      // keep this modest — the compact JSON response fits well under 2k.
+      max_tokens: 2000,
     }),
   });
   if (!res.ok) throw new Error(`Groq API ${res.status}: ${await res.text()}`);
