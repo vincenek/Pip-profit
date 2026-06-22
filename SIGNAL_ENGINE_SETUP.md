@@ -56,9 +56,42 @@ The economic calendar needs **no key** — it's a free public feed.
 
 | Variable | Default | Does |
 |---|---|---|
-| `SIGNAL_PAIRS` | `EUR/USD,GBP/USD,USD/JPY` | Pairs to analyse. |
-| `GEMINI_MODEL` | `gemini-flash-latest` | The free Gemini model (auto-tracks the current Flash). `gemini-2.5-flash` / `gemini-2.0-flash` also work. |
+| `SIGNAL_PAIRS` | `EUR/USD,GBP/USD,USD/JPY` | Pairs to analyse (one batched AI call covers all). |
+| `GEMINI_MODEL` | `gemini-2.0-flash` | Use a model with a real free **daily** quota. ⚠️ Don't use `gemini-flash-latest`/`gemini-2.5-flash`/`gemini-3.5-flash` — their free tier is ~20 req/day and causes 429 errors. |
 | `NEWS_WINDOW_MIN` | `60` | Minutes around a high-impact event to black out signals. |
+| `NOTIFY_MIN_SCORE` | `65` | Only alert (and flag as high-conviction) signals at/above this quality score. |
+
+## Get alerts when there's a signal (optional, all free)
+
+The engine messages you on a **new high-quality entry** (quality score ≥ `NOTIFY_MIN_SCORE`)
+and when a trade **resolves** (hit TP ✅ / hit SL ❌). Set up any one (or more) — each
+is independent and only activates if its env vars are present.
+
+**Telegram (easiest, 100% free, recommended):**
+1. In Telegram, message **@BotFather** → `/newbot` → follow prompts → copy the **bot token**.
+2. Message your new bot anything (so it can DM you), then open
+   `https://api.telegram.org/bot<YOUR_TOKEN>/getUpdates` in a browser and copy the
+   `"chat":{"id": ...}` number.
+3. Netlify env vars: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`.
+
+**WhatsApp (free, via CallMeBot):**
+1. Add **+34 644 51 95 23** to contacts, send it: `I allow callmebot to send me messages`.
+2. It replies with your **API key**.
+3. Netlify env vars: `CALLMEBOT_PHONE` (your number, e.g. `+15551234567`), `CALLMEBOT_APIKEY`.
+
+**Email (via Resend free tier):**
+1. Sign up at https://resend.com → create an **API key**.
+2. Netlify env vars: `RESEND_API_KEY`, `NOTIFY_EMAIL_TO` (your email). Optional
+   `NOTIFY_EMAIL_FROM` (defaults to Resend's test sender, which can email *you*).
+
+## The quality score (the honest "% correctness")
+
+Every actionable signal gets a **quality score (0-100)** computed in code from:
+multi-timeframe confluence strength, trend regime (ADX), direction-vs-bias agreement,
+session/liquidity, and event risk — then **blended with the engine's real historical
+win-rate** once enough trades have resolved. It is an *estimate of setup quality*, not a
+guarantee. The dashboard's win-rate / avg-R is the ground truth that proves (or disproves)
+the edge over time.
 
 > **Data efficiency:** one Twelve Data call per pair (the engine fetches 1H and
 > resamples to 4H/Daily in code), so 3 pairs/run sits well inside the free tier
