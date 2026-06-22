@@ -795,30 +795,33 @@ function formatEntryAlert(s) {
 async function sendTelegram(text) {
   const token = process.env.TELEGRAM_BOT_TOKEN;
   const chat = process.env.TELEGRAM_CHAT_ID;
-  if (!token || !chat) return;
+  if (!token || !chat) return "skipped (set TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID)";
   const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ chat_id: chat, text, disable_web_page_preview: true }),
   });
   if (!res.ok) throw new Error(`Telegram ${res.status}: ${await res.text()}`);
+  return "sent";
 }
 
 async function sendWhatsApp(text) {
   const phone = process.env.CALLMEBOT_PHONE;
   const key = process.env.CALLMEBOT_APIKEY;
-  if (!phone || !key) return;
+  if (!phone || !key) return "skipped (set CALLMEBOT_PHONE + CALLMEBOT_APIKEY)";
   const url =
     `https://api.callmebot.com/whatsapp.php?phone=${encodeURIComponent(phone)}` +
     `&text=${encodeURIComponent(text)}&apikey=${encodeURIComponent(key)}`;
   const res = await fetch(url);
   if (!res.ok) throw new Error(`CallMeBot ${res.status}`);
+  return "sent";
 }
 
 async function sendEmail(subject, text) {
   const key = process.env.RESEND_API_KEY;
   const to = process.env.NOTIFY_EMAIL_TO;
-  if (!key || !to) return;
+  if (!key) return "skipped (set RESEND_API_KEY)";
+  if (!to) return "skipped (set NOTIFY_EMAIL_TO to your Resend signup email)";
   const from = process.env.NOTIFY_EMAIL_FROM || "FX Signal Desk <onboarding@resend.dev>";
   const res = await fetch("https://api.resend.com/emails", {
     method: "POST",
@@ -826,4 +829,15 @@ async function sendEmail(subject, text) {
     body: JSON.stringify({ from, to, subject, text }),
   });
   if (!res.ok) throw new Error(`Resend ${res.status}: ${await res.text()}`);
+  return "sent";
 }
+
+// Exposed so run-now?test=1 can verify each notification channel directly.
+exports.testAlert = async () => {
+  const text = "✅ FX Signal Desk test — your alerts are working.";
+  return {
+    telegram: await sendTelegram(text).then((r) => r).catch((e) => "ERROR: " + String(e)),
+    whatsapp: await sendWhatsApp(text).then((r) => r).catch((e) => "ERROR: " + String(e)),
+    email: await sendEmail("FX Signal Desk test", text).then((r) => r).catch((e) => "ERROR: " + String(e)),
+  };
+};

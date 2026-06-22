@@ -23,6 +23,17 @@ exports.handler = async (event) => {
   // for the engine handler we call below).
   try { if (event && event.blobs) connectLambda(event); } catch (e) { /* noop */ }
 
+  // ?test=1 → just verify notification channels (no engine run, no quota used).
+  const qs = event && event.queryStringParameters;
+  if (qs && (qs.test === "1" || qs.test === "true")) {
+    try {
+      const channels = await engine.testAlert();
+      return { statusCode: 200, headers, body: JSON.stringify({ test: true, channels }, null, 2) };
+    } catch (err) {
+      return { statusCode: 500, headers, body: JSON.stringify({ error: String(err) }, null, 2) };
+    }
+  }
+
   try {
     // Run the full engine pipeline (fetch -> indicators -> news -> Gemini -> grade -> save).
     const result = await engine.handler(event || {});
