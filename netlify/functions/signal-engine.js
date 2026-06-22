@@ -24,14 +24,17 @@
 //
 // It writes the SIGNAL + REASONING + TRACK RECORD. It does NOT place trades.
 //
-// Secrets / keys (Netlify env vars):
-//   GEMINI_API_KEY       required.  FREE Google AI Studio key (no credit card).
-//                        Get one at https://aistudio.google.com/apikey
+// AI key (set ONE — Groq strongly recommended, far more generous free tier):
+//   GROQ_API_KEY         FREE, no card, thousands of req/day. https://console.groq.com/keys
+//   GEMINI_API_KEY       FREE but tiny quota (0-20 req/day per model) — used only
+//                        if GROQ_API_KEY is absent. https://aistudio.google.com/apikey
+// Data:
 //   TWELVEDATA_API_KEY   recommended.  Free OHLC. Without it -> daily-close fallback.
 //
 // Optional:
 //   SIGNAL_PAIRS  default "EUR/USD,GBP/USD,USD/JPY"
-//   GEMINI_MODEL  default "gemini-2.0-flash"  (free tier)
+//   GROQ_MODEL    default "llama-3.3-70b-versatile"
+//   GEMINI_MODEL  default "gemini-2.0-flash"
 //   NEWS_WINDOW_MIN  minutes around a high-impact event to blackout (default 60)
 // ---------------------------------------------------------------------------
 
@@ -41,8 +44,7 @@ const PAIRS = (process.env.SIGNAL_PAIRS || "EUR/USD,GBP/USD,USD/JPY")
   .split(",")
   .map((p) => p.trim().toUpperCase())
   .filter(Boolean);
-// gemini-2.0-flash has a large free daily quota; gemini-flash-latest now points
-// to 3.5-flash whose free tier is only ~20 requests/day (causes 429s).
+const GROQ_MODEL = process.env.GROQ_MODEL || "llama-3.3-70b-versatile";
 const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-2.0-flash";
 const TD_KEY = process.env.TWELVEDATA_API_KEY;
 const NEWS_WINDOW_MIN = Number(process.env.NEWS_WINDOW_MIN || 60);
@@ -50,9 +52,9 @@ const NEWS_WINDOW_MIN = Number(process.env.NEWS_WINDOW_MIN || 60);
 const NOTIFY_MIN_SCORE = Number(process.env.NOTIFY_MIN_SCORE || 65);
 
 exports.handler = async (event) => {
-  if (!process.env.GEMINI_API_KEY) {
-    console.error("signal-engine: GEMINI_API_KEY is not set");
-    return { statusCode: 500, body: "GEMINI_API_KEY missing" };
+  if (!process.env.GROQ_API_KEY && !process.env.GEMINI_API_KEY) {
+    console.error("signal-engine: no AI key set (GROQ_API_KEY or GEMINI_API_KEY)");
+    return { statusCode: 500, body: "No AI key set — add GROQ_API_KEY (recommended) or GEMINI_API_KEY" };
   }
 
   // Lambda-compat functions must wire up Blobs from the event before getStore().
@@ -643,7 +645,12 @@ async function analyzePairs(snapshots) {
     `6. Size the stop ~1.5x the 1H ATR beyond entry OR behind the nearest swing level; ` +
     `minimum 1.5:1 reward. Give NUMERIC entry/stop/target levels so outcomes can be graded.\n\n` +
     `A skipped trade is a professional result. Technical research, not financial advice.\n\n` +
-    blocks;
+    blocks +
+    `\n\nReturn ONLY a JSON object of this exact shape (one object per pair):\n` +
+    `{"signals":[{"pair":"EUR/USD","direction":"buy|sell|no_trade","confidence":0-100,` +
+    `"timeframe":"","headline":"","entry":"","entry_price":0,"stop_loss":"","stop_loss_price":0,` +
+    `"take_profit_1":"","tp1_price":0,"take_profit_2":"","tp2_price":0,"risk_reward":"",` +
+    `"confluence":[""],"technical_reasoning":"","invalidation":"","news_risk":""}]}`;
 
   const responseSchema = {
     type: "OBJECT",
@@ -653,12 +660,44 @@ async function analyzePairs(snapshots) {
     required: ["signals"],
   };
 
-  const parsed = await callGemini(prompt, responseSchema);
+  const parsed = await callAI(prompt, responseSchema);
   const out = {};
   for (const sig of parsed.signals || []) {
     if (sig && sig.pair) out[sig.pair.toUpperCase()] = sig;
   }
   return out;
+}
+
+// Provider router — Groq if a key is set (generous free tier), else Gemini.
+async function callAI(prompt, responseSchema) {
+  if (process.env.GROQ_API_KEY) return callGroq(prompt);
+  return callGemini(prompt, responseSchema);
+}
+
+async function callGroq(prompt) {
+  const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${process.env.GROQ_API_KEY}`,
+    },
+    body: JSON.stringify({
+      model: GROQ_MODEL,
+      messages: [{ role: "user", content: prompt }],
+      response_format: { type: "json_object" },
+      temperature: 0.3,
+      max_tokens: 4096,
+    }),
+  });
+  if (!res.ok) throw new Error(`Groq API ${res.status}: ${await res.text()}`);
+  const data = await res.json();
+  const content = data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content;
+  if (!content) throw new Error("Groq returned no content");
+  try {
+    return JSON.parse(content);
+  } catch (e) {
+    throw new Error(`Groq JSON parse failed: ${content.slice(0, 200)}`);
+  }
 }
 
 async function callGemini(prompt, responseSchema) {

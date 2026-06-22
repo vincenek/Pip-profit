@@ -43,8 +43,14 @@ Everything is computed in code from real OHLC, then handed to the AI (Gemini) as
 
 | Variable | Required? | What it is |
 |---|---|---|
-| `GEMINI_API_KEY` | **Yes** | **Free** Google AI Studio key — get one in ~30 sec at https://aistudio.google.com/apikey (no card). Free tier allows ~1,500 requests/day; this engine uses ~72/day. Server-side only. |
+| `GROQ_API_KEY` | **Yes (recommended)** | **Free, no credit card** — get one in ~30 sec at https://console.groq.com/keys. Generous free tier (thousands of requests/day), so it never hits quota walls. The engine uses Groq automatically when this is set. |
+| `GEMINI_API_KEY` | Alternative | Only used if `GROQ_API_KEY` is absent. ⚠️ Google's free tier is tiny (0–20 requests/day per model) and causes `429` errors fast — **use Groq instead.** |
 | `TWELVEDATA_API_KEY` | Strongly recommended | **Free** key from https://twelvedata.com — gives intraday OHLC so the multi-timeframe engine + ATR work. Without it, falls back to daily-close data (frankfurter.dev): fewer indicators, no intraday, no real ATR. |
+
+> **Why Groq, not Gemini?** Gemini's free tier turned out to allow only ~0–20 AI
+> requests/day for this kind of project — far too few for a tool that runs hourly.
+> Groq's free tier is thousands/day. Same idea, no quota pain. Get the key, set
+> `GROQ_API_KEY` in Netlify, redeploy — the engine switches to it automatically.
 
 The economic calendar needs **no key** — it's a free public feed.
 
