@@ -110,6 +110,32 @@ exports.handler = async (event) => {
     }
   }
 
+  // 2b. SELF-CRITIQUE — risk-manager review can veto/adjust actionable signals.
+  if (Object.keys(signalByPair).length) {
+    const actionable = okBuilt
+      .map((b) => ({ pair: b.pair, signal: signalByPair[b.pair], snapshot: b.snapshot }))
+      .filter((it) => it.signal && (it.signal.direction === "buy" || it.signal.direction === "sell"));
+    if (actionable.length) {
+      try {
+        const reviews = await critiqueSignals(actionable);
+        for (const it of actionable) {
+          const r = reviews[it.pair.toUpperCase()];
+          if (!r) continue;
+          it.signal.critique = r.critique;
+          if (r.verdict === "reject") {
+            it.signal.direction = "no_trade";
+            it.signal.headline = "Vetoed by risk-manager review";
+            it.signal.technical_reasoning = `Risk-manager veto: ${r.critique}. ` + (it.signal.technical_reasoning || "");
+          } else if (typeof r.adjusted_confidence === "number") {
+            it.signal.confidence = r.adjusted_confidence;
+          }
+        }
+      } catch (err) {
+        console.warn("critique pass failed (keeping original signals):", String(err));
+      }
+    }
+  }
+
   // 3. Assemble records, score, track.
   const signals = [];
   const justOpened = []; // new actionable signals this run (for entry alerts)
@@ -731,7 +757,8 @@ function validateSignal(sig, s) {
   const risk = Math.abs(e - sl);
   if (risk <= 0) return "zero risk (entry equals stop)";
   const rr = Math.abs(t1 - e) / risk;
-  if (rr < 1.2) return `reward:risk too low (${rr.toFixed(2)}:1)`;
+  // Never risk more than the first target pays. Demand at least 1.5:1 to TP1.
+  if (rr < 1.5) return `reward:risk too low (${rr.toFixed(2)}:1 — TP must be ≥1.5x the stop distance)`;
   if (s.price && Math.abs(e - s.price) / s.price > 0.03) return "entry too far from current price";
   if (s.atr) {
     const slAtr = risk / s.atr;
@@ -814,8 +841,10 @@ async function analyzePairs(snapshots, perfFeedback) {
     `sell's TP ABOVE the nearest support. If price is right at opposing structure with no ` +
     `room, return no_trade.\n` +
     `6. Require multi-timeframe confluence (Weekly + Daily + 4H + 1H agree). Marginal = no_trade.\n` +
-    `7. Size the stop ~1.5x the 1H ATR beyond entry OR behind the nearest swing level; ` +
-    `minimum 1.5:1 reward. Give NUMERIC entry/stop/target levels so outcomes can be graded.\n\n` +
+    `7. REWARD:RISK IS NON-NEGOTIABLE. TP1 must be at least 1.5x the stop distance ` +
+    `(prefer 2:1). NEVER set TP closer to entry than the stop — risking more than you ` +
+    `aim to make is an automatic no_trade. Size the stop ~1.5x the 1H ATR beyond entry ` +
+    `OR behind the nearest swing level. Give NUMERIC entry/stop/target levels.\n\n` +
     `A skipped trade is a professional result. Technical research, not financial advice.\n\n` +
     blocks +
     `\n\nReturn ONLY a JSON object of this exact shape (one object per pair):\n` +
@@ -836,6 +865,61 @@ async function analyzePairs(snapshots, perfFeedback) {
   const out = {};
   for (const sig of parsed.signals || []) {
     if (sig && sig.pair) out[sig.pair.toUpperCase()] = sig;
+  }
+  return out;
+}
+
+// SELF-CRITIQUE — a second pass where the AI acts as a strict risk manager and
+// must justify (or veto) each proposed trade. Forces it to actually understand
+// the signal before it counts. items: [{pair, signal, snapshot}].
+async function critiqueSignals(items) {
+  if (!items.length) return {};
+  const lines = items.map(({ signal: g, snapshot: s }) => {
+    const e = g.entry_price, sl = g.stop_loss_price, t1 = g.tp1_price;
+    const rr = sl && e ? Math.abs(t1 - e) / (Math.abs(e - sl) || 1e-9) : 0;
+    const wk = s.w1 && Number.isFinite(s.w1.sma20) ? (s.w1.sma20 > s.w1.sma50 ? "up" : "down") : "?";
+    return (
+      `[${g.pair}] ${g.direction.toUpperCase()} entry ${e} sl ${sl} tp1 ${t1} ` +
+      `(R:R ${rr.toFixed(2)}:1) · weekly ${wk} · regime ${s.regime} · ` +
+      `newsBlackout ${s.newsBlackout} · reason: "${(g.technical_reasoning || "").slice(0, 200)}"`
+    );
+  }).join("\n");
+
+  const prompt =
+    `You are a strict, skeptical FX risk manager doing the FINAL check before real ` +
+    `money is risked. For EACH proposed trade, approve ONLY if you would personally ` +
+    `take it. REJECT if any of these is true: it fights the weekly trend; reward:risk ` +
+    `< 1.5; the entry/stop/targets are illogical; the stated reasoning is weak, generic, ` +
+    `or contradicts the data; the regime is ranging; or it's a forced/low-conviction ` +
+    `trade. Be honest — a rejected trade saves money.\n\n` +
+    `Proposed trades:\n${lines}\n\n` +
+    `Return ONLY JSON: {"reviews":[{"pair":"EUR/USD","verdict":"approve|reject",` +
+    `"adjusted_confidence":0-100,"critique":"one short sentence"}]}`;
+
+  const responseSchema = {
+    type: "OBJECT",
+    properties: {
+      reviews: {
+        type: "ARRAY",
+        items: {
+          type: "OBJECT",
+          properties: {
+            pair: STR,
+            verdict: { type: "STRING", enum: ["approve", "reject"] },
+            adjusted_confidence: { type: "INTEGER" },
+            critique: STR,
+          },
+          required: ["pair", "verdict", "adjusted_confidence", "critique"],
+        },
+      },
+    },
+    required: ["reviews"],
+  };
+
+  const parsed = await callAI(prompt, responseSchema);
+  const out = {};
+  for (const r of parsed.reviews || []) {
+    if (r && r.pair) out[r.pair.toUpperCase()] = r;
   }
   return out;
 }
