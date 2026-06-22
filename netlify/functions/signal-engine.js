@@ -44,7 +44,10 @@ const PAIRS = (process.env.SIGNAL_PAIRS || "EUR/USD,GBP/USD,USD/JPY,AUD/USD,USD/
   .split(",")
   .map((p) => p.trim().toUpperCase())
   .filter(Boolean);
-const GROQ_MODEL = process.env.GROQ_MODEL || "llama-3.3-70b-versatile";
+// 8b-instant has a much larger free DAILY TOKEN budget (~500k vs ~100k for 70b)
+// and is fast — the engine's math does the heavy analysis, the AI just synthesises.
+// Set GROQ_MODEL=llama-3.3-70b-versatile for max reasoning (lower daily token cap).
+const GROQ_MODEL = process.env.GROQ_MODEL || "llama-3.1-8b-instant";
 const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-2.0-flash";
 const TD_KEY = process.env.TWELVEDATA_API_KEY;
 const NEWS_WINDOW_MIN = Number(process.env.NEWS_WINDOW_MIN || 60);
@@ -829,11 +832,18 @@ function perPairBlock(s) {
     `Session: ${s.session.open}${s.session.overlap ? " (peak)" : ""} ${s.session.active ? "ACTIVE" : "thin"} · ` +
     `NewsBlackout(${NEWS_WINDOW_MIN}m): ${s.newsBlackout}\n` +
     `Structure: nearest resistance ${s.nearestResistance} · nearest support ${s.nearestSupport} ` +
-    `(don't target through these — keep TP on the right side with room)\n` +
+    `(keep TP on the right side, with room)\n` +
     `Events:\n${eventLines}\n` +
     `Confluence: ${s.confluence.join("; ")}\n` +
-    `Weekly: ${JSON.stringify(s.w1)}\nDaily: ${JSON.stringify(s.d1)}\n4H: ${JSON.stringify(s.h4)}\n1H: ${JSON.stringify(s.h1)}\n`
+    `${tfLine("W ", s.w1)}\n${tfLine("D ", s.d1)}\n${tfLine("4H", s.h4)}\n${tfLine("1H", s.h1, true)}\n`
   );
+}
+
+// Compact one-line indicator summary (far fewer tokens than full JSON).
+function tfLine(name, t, full) {
+  let s = `${name} px:${t.price} sma20:${t.sma20} sma50:${t.sma50} rsi:${t.rsi14} macdH:${t.macdHist} adx:${t.adx} swHi:${t.swingHigh} swLo:${t.swingLow}`;
+  if (full) s += ` ema20:${t.ema20} atr:${t.atr} bbU:${t.bbUpper} bbL:${t.bbLower} stochK:${t.stochK}`;
+  return s;
 }
 
 async function analyzePairs(snapshots, perfFeedback) {
