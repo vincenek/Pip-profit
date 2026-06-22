@@ -216,7 +216,7 @@ async function buildSnapshot(pair, calendar) {
   let d1, h4, h1, w1;
 
   if (TD_KEY) {
-    const base = await twelveData(pair, "1h", 5000); // one call; resample to higher TFs
+    const base = await getCandles(pair); // cached -> avoids Twelve Data 429s
     h1 = analyse(base);
     h4 = analyse(resample(base, h4Key));
     d1 = analyse(resample(base, d1Key));
@@ -297,6 +297,21 @@ function sessionInfo(pair) {
   else active = (london || ny) && hasUSDorEUR;
   const overlap = london && ny; // London/NY overlap = peak liquidity
   return { active, overlap, open: names.join("+") || "off-hours" };
+}
+
+// Cached candle fetch — reuse data for up to ~55 min so repeated runs (Run-now
+// clicks, overlapping cron) don't burn Twelve Data's 8-calls/minute free limit.
+const CANDLE_CACHE_MIN = Number(process.env.CANDLE_CACHE_MIN || 55);
+async function getCandles(pair) {
+  const store = getStore("signals");
+  const key = `candles:${keyFor(pair)}`;
+  const cached = await store.get(key, { type: "json" }).catch(() => null);
+  if (cached && cached.fetchedAt && Date.now() - cached.fetchedAt < CANDLE_CACHE_MIN * 60000) {
+    return cached.base;
+  }
+  const base = await twelveData(pair, "1h", 5000);
+  await store.setJSON(key, { fetchedAt: Date.now(), base }).catch(() => {});
+  return base;
 }
 
 // --- Twelve Data ------------------------------------------------------------
@@ -444,11 +459,13 @@ function scoreBias(w1, d1, h4, h1, price) {
 
   // Weekly = the dominant trend. Counts double (added twice) so trades that
   // fight the big-picture trend get a strong negative bias.
-  if (Number.isFinite(w1.sma20) && Number.isFinite(w1.sma50)) {
-    add(w1.sma20 > w1.sma50, true, "Weekly uptrend");
-    add(w1.sma20 > w1.sma50, true, "Weekly uptrend (confirmed)");
-    add(w1.sma20 < w1.sma50, false, "Weekly downtrend");
-    add(w1.sma20 < w1.sma50, false, "Weekly downtrend (confirmed)");
+  if (Number.isFinite(w1.sma20)) {
+    const wkClose = w1.closes[w1.closes.length - 1];
+    const wkBull = wkClose > w1.sma20;
+    add(wkBull, true, "Weekly above 20-wk MA");
+    add(wkBull, true, "Weekly uptrend (confirmed)");
+    add(!wkBull, false, "Weekly below 20-wk MA");
+    add(!wkBull, false, "Weekly downtrend (confirmed)");
   }
 
   // Daily trend = the master intraday filter
@@ -1006,8 +1023,8 @@ function qualityScore(s, signal, calibration) {
   if (buy === biasBull) q += 6; else q -= 12;
 
   // Weekly (dominant) trend agreement — fighting it is a big penalty.
-  if (s.w1 && Number.isFinite(s.w1.sma20) && Number.isFinite(s.w1.sma50)) {
-    const wkBull = s.w1.sma20 > s.w1.sma50;
+  if (s.w1 && Number.isFinite(s.w1.sma20)) {
+    const wkBull = s.w1.price > s.w1.sma20;
     if (buy === wkBull) q += 8; else q -= 14;
   }
   // Room to target — penalize entering right into opposing structure.
