@@ -867,7 +867,16 @@ async function analyzePairs(snapshots, perfFeedback) {
   const parsed = await callAI(prompt, responseSchema);
   const out = {};
   for (const sig of parsed.signals || []) {
-    if (sig && sig.pair) out[sig.pair.toUpperCase()] = sig;
+    if (!sig || !sig.pair) continue;
+    // Smaller models sometimes return numbers as strings — coerce so valid
+    // signals aren't wrongly rejected by validation.
+    for (const f of ["entry_price", "stop_loss_price", "tp1_price", "tp2_price", "confidence"]) {
+      if (sig[f] != null && typeof sig[f] !== "number") {
+        const n = Number(sig[f]);
+        if (Number.isFinite(n)) sig[f] = n;
+      }
+    }
+    out[sig.pair.toUpperCase()] = sig;
   }
   return out;
 }
