@@ -79,13 +79,14 @@ exports.handler = async (event) => {
   const calibration = { winRate: ledger.stats.winRate, total: ledger.stats.total };
 
   const justClosed = []; // trades resolved this run (for result alerts)
+  const manageAlerts = []; // open trades turning bad / hitting +1R (exit mgmt)
 
   // 1. Build snapshots + grade open trades in parallel (NO AI yet — just data).
   const built = await Promise.all(
     PAIRS.map(async (pair) => {
       try {
         const snapshot = await buildSnapshot(pair, calendar);
-        evaluateOpenSignals(pair, snapshot, ledger, justClosed);
+        evaluateOpenSignals(pair, snapshot, ledger, justClosed, manageAlerts);
         return { pair, snapshot };
       } catch (err) {
         console.error(`${pair} data failed:`, err);
@@ -153,8 +154,8 @@ exports.handler = async (event) => {
     history: ledger.closed.slice(0, 25), // resolved trades: hit TP (win) vs SL (loss)
   });
 
-  // Notifications: alert on result of closed trades + new high-quality entries.
-  await dispatchAlerts(justOpened, justClosed);
+  // Notifications: closed results + new high-quality entries + exit management.
+  await dispatchAlerts(justOpened, justClosed, manageAlerts);
 
   console.log(
     "signal-engine done:", signals.length, "pairs; winRate", ledger.stats.winRate,
@@ -518,22 +519,59 @@ function trackNewSignal(record, snapshot, ledger) {
   return true;
 }
 
-function evaluateOpenSignals(pair, snapshot, ledger, justClosed) {
+function evaluateOpenSignals(pair, snapshot, ledger, justClosed, manageAlerts) {
   const raw = snapshot._h1raw;
-  if (!raw || !raw.datetimes) return;
   const still = [];
   for (const o of ledger.open) {
     if (o.pair !== pair) { still.push(o); continue; }
-    const result = checkOutcome(o, raw);
+    // First: did it hit a hard level (TP/SL)?
+    const result = raw && raw.datetimes ? checkOutcome(o, raw) : null;
     if (result) {
       const closedRec = { ...o, ...result, closedAt: new Date().toISOString() };
       ledger.closed.unshift(closedRec);
       if (justClosed) justClosed.push(closedRec);
-    } else still.push(o);
+      continue;
+    }
+    // Still open → active trade management (exit early / breakeven).
+    const action = manageOpenTrade(o, snapshot);
+    if (action && manageAlerts) {
+      manageAlerts.push({ ...action, pair: o.pair, direction: o.direction, entry: o.entry });
+      if (action.type === "close") o.warned = true;       // alert once per trade
+      if (action.type === "breakeven") o.breakevenSuggested = true;
+    }
+    still.push(o);
   }
   ledger.open = ledger.open.filter((o) => o.pair !== pair).concat(still.filter((o) => o.pair === pair));
-  // cap closed history
   ledger.closed = ledger.closed.slice(0, 200);
+}
+
+// Decide if an OPEN trade should be actively managed before it hits its stop.
+// Deterministic — based on the fresh snapshot, not vibes.
+function manageOpenTrade(o, s) {
+  const price = s.price;
+  const risk = Math.abs(o.entry - o.sl) || 1e-9;
+  const buy = o.direction === "buy";
+  const rNow = (buy ? price - o.entry : o.entry - price) / risk; // +R in profit, -R adverse
+
+  // Thesis broke: higher-timeframe bias flipped against the position.
+  const biasAgainst = buy ? s.biasScore <= -2 : s.biasScore >= 2;
+  // Momentum (1h MACD) turned against the position.
+  const momAgainst = buy ? s.h1.macdHist < 0 : s.h1.macdHist > 0;
+  // High-impact news now imminent while we're still in.
+  const news = s.newsBlackout;
+
+  if (!o.warned && (biasAgainst || (rNow < -0.7 && momAgainst) || (news && rNow < 0.3))) {
+    const reasons = [];
+    if (biasAgainst) reasons.push("higher-timeframe bias flipped against the trade");
+    if (rNow < -0.7 && momAgainst) reasons.push("price moving toward your stop with momentum against");
+    if (news) reasons.push("high-impact news now imminent");
+    return { type: "close", reason: reasons.join("; "), rNow };
+  }
+  // In decent profit but no exit reason → suggest protecting it.
+  if (!o.breakevenSuggested && !o.warned && rNow >= 1) {
+    return { type: "breakeven", reason: "trade is +1R in profit", rNow };
+  }
+  return null;
 }
 
 // Walk candles after the signal opened; first level touched wins/loses.
@@ -761,8 +799,24 @@ function qualityScore(s, signal, calibration) {
 // ===========================================================================
 // NOTIFICATIONS — Telegram / WhatsApp(CallMeBot) / Email(Resend), all optional
 // ===========================================================================
-async function dispatchAlerts(opened, closed) {
+async function dispatchAlerts(opened, closed, manage = []) {
   const msgs = [];
+  // Exit management first — these are the most time-sensitive.
+  for (const m of manage) {
+    const dir = String(m.direction || "").toUpperCase();
+    if (m.type === "close") {
+      msgs.push(
+        `⚠️ CLOSE / REASSESS ${m.pair} ${dir}\n` +
+        `Reason: ${m.reason}.\nNow ${m.rNow >= 0 ? "+" : ""}${m.rNow.toFixed(1)}R (entry ${m.entry}).\n` +
+        `Consider exiting early or tightening your stop.`
+      );
+    } else if (m.type === "breakeven") {
+      msgs.push(
+        `🛡️ ${m.pair} ${dir} is +${m.rNow.toFixed(1)}R\n` +
+        `Consider moving your stop to breakeven (${m.entry}) to lock in a risk-free trade.`
+      );
+    }
+  }
   for (const c of closed) {
     const win = c.outcome === "win";
     msgs.push(
