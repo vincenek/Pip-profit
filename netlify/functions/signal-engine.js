@@ -103,18 +103,44 @@ exports.handler = async (event) => {
   // 2. ONE Gemini call for ALL pairs — 3x fewer requests = stays in free quota.
   const okBuilt = built.filter((b) => !b.error);
   let signalByPair = {};
+  let aiReviews = {};
   let aiError = null;
   if (okBuilt.length) {
     try {
-      signalByPair = await analyzePairs(okBuilt.map((b) => b.snapshot), perfFeedback);
+      const res = await analyzePairs(okBuilt.map((b) => b.snapshot), perfFeedback, ledger.open);
+      signalByPair = res.signals || {};
+      aiReviews = res.reviews || {};
     } catch (err) {
       aiError = String(err);
       console.error("AI batch failed:", aiError);
     }
   }
 
-  // (Self-check is now inline in the single AI call via the "concerns" field —
-  // one request keeps us inside the free per-minute token limit.)
+  // 2b. BEST OF BOTH — apply the AI's judgement on OPEN trades: it can close one
+  //     early when the reason has broken. Code still handles all stop-trailing.
+  if (Object.keys(aiReviews).length) {
+    const priceByPair = {};
+    for (const b of okBuilt) priceByPair[b.pair] = b.snapshot.price;
+    const stillOpen = [];
+    for (const o of ledger.open) {
+      const rv = aiReviews[o.pair.toUpperCase()];
+      const price = priceByPair[o.pair];
+      if (rv && rv.verdict === "close" && price) {
+        const r = currentR(o, price);
+        const closedRec = {
+          ...o, closedAt: new Date().toISOString(),
+          outcome: r > 0.01 ? "win" : r < -0.01 ? "loss" : "scratch",
+          rMultiple: Number(r.toFixed(2)), exit: "ai-close", exitReason: rv.reason, exitPrice: price,
+        };
+        ledger.closed.unshift(closedRec);
+        justClosed.push(closedRec);
+        manageAlerts.push({ type: "close", pair: o.pair, direction: o.direction, entry: o.entry, reason: `AI review: ${rv.reason}`, rNow: r });
+      } else {
+        stillOpen.push(o);
+      }
+    }
+    ledger.open = stillOpen;
+  }
 
   // 3. Assemble records, score, track.
   const signals = [];
@@ -194,6 +220,13 @@ exports.handler = async (event) => {
 
 function keyFor(pair) {
   return pair.replace("/", "-");
+}
+
+// Parse a "YYYY-MM-DD HH:MM:SS" candle time as UTC, regardless of server timezone.
+function tparseUTC(dt) {
+  if (!dt) return NaN;
+  const iso = dt.includes("T") ? dt : dt.replace(" ", "T");
+  return Date.parse(iso.endsWith("Z") ? iso : iso + "Z");
 }
 
 // ===========================================================================
@@ -586,13 +619,19 @@ function trackNewSignal(record, snapshot, ledger) {
     pair: record.pair,
     direction: record.direction,
     entry: record.entry_price,
-    sl: record.stop_loss_price,
+    sl: record.stop_loss_price,      // original (initial) stop
     tp1: record.tp1_price,
-    tp2: record.tp2_price,
+    tp2: record.tp2_price,           // final target (~3R)
     timeframe: record.timeframe,
     qualityScore: record.qualityScore,
     openedAt: record.generatedAt,
     openedTs: Date.parse(record.generatedAt),
+    // Active-management state (the 24/7 manager):
+    peakR: 0,                        // best favourable excursion reached
+    lockedR: -1,                     // -1 = original stop; 0 = breakeven; 1 = +1R; ...
+    currentStop: record.stop_loss_price,
+    stage: "initial",
+    alertedLockedR: -1,
   });
   return true;
 }
@@ -602,23 +641,35 @@ function evaluateOpenSignals(pair, snapshot, ledger, justClosed, manageAlerts) {
   const still = [];
   for (const o of ledger.open) {
     if (o.pair !== pair) { still.push(o); continue; }
-    // First: did it hit a hard level (TP/SL)?
-    const result = raw && raw.datetimes ? checkOutcome(o, raw) : null;
-    if (result) {
-      const closedRec = { ...o, ...result, closedAt: new Date().toISOString() };
+
+    // 1. Simulate the trade with the TRAILING stop (breakeven at +1R, trail 1R
+    //    behind each milestone after). Returns a close, or updates live state.
+    const graded = raw && raw.datetimes ? gradeWithTrailing(o, raw) : { closed: false };
+    if (graded.closed) {
+      const closedRec = { ...o, ...graded, closedAt: new Date().toISOString() };
       ledger.closed.unshift(closedRec);
       if (justClosed) justClosed.push(closedRec);
       continue;
     }
-    // Still open → active trade management (cut losses / trail winners).
+
+    // 2. Active management on the still-open trade.
     const action = manageOpenTrade(o, snapshot);
-    if (action && manageAlerts) {
+    if (action && action.type === "close") {
+      // CUT EARLY: thesis broke — close now at current price (don't wait for stop).
+      const r = currentR(o, snapshot.price);
+      const closedRec = {
+        ...o, closedAt: new Date().toISOString(),
+        outcome: r > 0.01 ? "win" : r < -0.01 ? "loss" : "scratch",
+        rMultiple: Number(r.toFixed(2)), exit: "managed-close", exitReason: action.reason,
+        exitPrice: snapshot.price,
+      };
+      ledger.closed.unshift(closedRec);
+      if (justClosed) justClosed.push(closedRec);
+      if (manageAlerts) manageAlerts.push({ ...action, pair: o.pair, direction: o.direction, entry: o.entry });
+      continue; // removed from open
+    }
+    if (action && action.type === "trail" && manageAlerts) {
       manageAlerts.push({ ...action, pair: o.pair, direction: o.direction, entry: o.entry });
-      if (action.type === "close") o.warned = true;       // alert once per trade
-      if (action.type === "trail") {
-        o.lockedR = action.lockedR;                       // remember how much is locked
-        o.trailStop = action.newStop;                     // for dashboard display
-      }
     }
     still.push(o);
   }
@@ -626,23 +677,25 @@ function evaluateOpenSignals(pair, snapshot, ledger, justClosed, manageAlerts) {
   ledger.closed = ledger.closed.slice(0, 200);
 }
 
-// Decide if an OPEN trade should be actively managed before it hits its stop.
-// Deterministic — based on the fresh snapshot, not vibes.
-function manageOpenTrade(o, s) {
-  const price = s.price;
+function currentR(o, price) {
   const risk = Math.abs(o.entry - o.sl) || 1e-9;
-  const buy = o.direction === "buy";
-  const rNow = (buy ? price - o.entry : o.entry - price) / risk; // +R in profit, -R adverse
+  return (o.direction === "buy" ? price - o.entry : o.entry - price) / risk;
+}
 
-  // Thesis broke: higher-timeframe bias flipped against the position.
+// Active management: cut early when the reason breaks; alert when the trailing
+// stop (already moved by gradeWithTrailing) steps up.
+function manageOpenTrade(o, s) {
+  const buy = o.direction === "buy";
+  const rNow = currentR(o, s.price);
+
   const biasAgainst = buy ? s.biasScore <= -2 : s.biasScore >= 2;
-  // Momentum (1h MACD) turned against the position.
   const momAgainst = buy ? s.h1.macdHist < 0 : s.h1.macdHist > 0;
-  // High-impact news now imminent while we're still in.
   const news = s.newsBlackout;
 
-  // CUT LOSSES: thesis broke / heading to stop / news risk → close early.
-  if (!o.warned && (biasAgainst || (rNow < -0.7 && momAgainst) || (news && rNow < 0.3))) {
+  // Only cut a trade that isn't already protected in profit (lockedR < 0 means
+  // still on the original stop). Once trailed to breakeven+, let the stop work.
+  if ((o.lockedR == null || o.lockedR < 0) &&
+      (biasAgainst || (rNow < -0.7 && momAgainst) || (news && rNow < 0.3))) {
     const reasons = [];
     if (biasAgainst) reasons.push("higher-timeframe bias flipped against the trade");
     if (rNow < -0.7 && momAgainst) reasons.push("price moving toward your stop with momentum against");
@@ -650,57 +703,92 @@ function manageOpenTrade(o, s) {
     return { type: "close", reason: reasons.join("; "), rNow };
   }
 
-  // TRAIL WINNERS: step the stop up as profit grows. lockedTarget is how many R
-  // the suggested stop now protects: 0R (breakeven) at +1R, +1R at +2R, etc.
-  if (!o.warned && rNow >= 1) {
-    const lockedTarget = Math.floor(rNow - 1); // 0 at [1,2), 1 at [2,3), ...
-    const have = o.lockedR == null ? -1 : o.lockedR;
-    if (lockedTarget > have) {
-      const newStop = buy ? o.entry + lockedTarget * risk : o.entry - lockedTarget * risk;
-      return { type: "trail", lockedR: lockedTarget, rNow, newStop: Number(newStop.toFixed(5)) };
-    }
+  // Trailing-stop step-up alert (gradeWithTrailing already moved o.currentStop).
+  const locked = o.lockedR == null ? -1 : o.lockedR;
+  const alerted = o.alertedLockedR == null ? -1 : o.alertedLockedR;
+  if (locked >= 0 && locked > alerted) {
+    o.alertedLockedR = locked;
+    return { type: "trail", lockedR: locked, rNow, newStop: o.currentStop };
   }
   return null;
 }
 
-// Walk candles after the signal opened; first level touched wins/loses.
-function checkOutcome(o, raw) {
+// Simulate the trade candle-by-candle with the breakeven+trail stop. Returns
+// {closed:true, outcome, rMultiple, ...} on exit, else {closed:false} and
+// updates o.peakR / o.lockedR / o.currentStop / o.stage in place.
+function gradeWithTrailing(o, raw) {
   const { datetimes, highs, lows } = raw;
-  const risk = Math.abs(o.entry - o.sl) || 1e-9;
+  const buy = o.direction === "buy";
+  const entry = o.entry;
+  const risk = Math.abs(entry - o.sl) || 1e-9;
+  const tp2 = o.tp2;
+  const dp = entry >= 10 ? 3 : 5;
+  const Rof = (p) => (buy ? p - entry : entry - p) / risk;
+  const stopPrice = (lockedR) =>
+    lockedR < 0 ? o.sl : buy ? entry + lockedR * risk : entry - lockedR * risk;
+
+  let peakR = o.peakR || 0;
+  let lockedR = o.lockedR == null ? -1 : o.lockedR;
+
   for (let i = 0; i < datetimes.length; i++) {
-    if (Date.parse(datetimes[i]) <= o.openedTs) continue;
+    if (tparseUTC(datetimes[i]) <= o.openedTs) continue;
     const hi = highs[i], lo = lows[i];
-    if (o.direction === "buy") {
-      const hitSL = lo <= o.sl;
-      const hitTP = hi >= o.tp1;
-      if (hitSL && hitTP) return { outcome: "loss", rMultiple: -1 }; // ambiguous -> conservative
-      if (hitSL) return { outcome: "loss", rMultiple: -1 };
-      if (hitTP) return { outcome: "win", rMultiple: +Number(((o.tp1 - o.entry) / risk).toFixed(2)) };
-    } else {
-      const hitSL = hi >= o.sl;
-      const hitTP = lo <= o.tp1;
-      if (hitSL && hitTP) return { outcome: "loss", rMultiple: -1 };
-      if (hitSL) return { outcome: "loss", rMultiple: -1 };
-      if (hitTP) return { outcome: "win", rMultiple: +Number(((o.entry - o.tp1) / risk).toFixed(2)) };
+    const eff = stopPrice(lockedR);
+
+    // a) Stop (uses the stop valid coming into this candle; stop-first tiebreak).
+    const stopHit = buy ? lo <= eff : hi >= eff;
+    if (stopHit) {
+      const r = Rof(eff);
+      return {
+        closed: true,
+        outcome: r > 0.01 ? "win" : r < -0.01 ? "loss" : "scratch",
+        rMultiple: Number(r.toFixed(2)),
+        exitPrice: Number(eff.toFixed(dp)),
+        peakR: Number(peakR.toFixed(2)),
+        exit: lockedR < 0 ? "stop" : lockedR === 0 ? "breakeven" : "trail +" + lockedR + "R",
+      };
+    }
+    // b) Final target.
+    const tpHit = buy ? hi >= tp2 : lo <= tp2;
+    if (tpHit) {
+      const r = Rof(tp2);
+      return {
+        closed: true, outcome: "win", rMultiple: Number(r.toFixed(2)),
+        exitPrice: tp2, peakR: Number(Math.max(peakR, r).toFixed(2)), exit: "target",
+      };
+    }
+    // c) Trail update for NEXT candle.
+    const favR = buy ? Rof(hi) : Rof(lo);
+    if (favR > peakR) peakR = favR;
+    if (peakR >= 1) {
+      const newLocked = Math.floor(peakR) - 1; // 0 at [1,2), 1 at [2,3), ...
+      if (newLocked > lockedR) lockedR = newLocked;
     }
   }
-  return null; // still open
+
+  // Still open — persist live management state.
+  o.peakR = Number(peakR.toFixed(2));
+  o.lockedR = lockedR;
+  o.currentStop = Number(stopPrice(lockedR).toFixed(dp));
+  o.stage = lockedR < 0 ? "initial" : lockedR === 0 ? "breakeven" : "+" + lockedR + "R locked";
+  return { closed: false };
 }
 
 function recomputeStats(ledger) {
   const closed = ledger.closed;
   const wins = closed.filter((c) => c.outcome === "win").length;
   const losses = closed.filter((c) => c.outcome === "loss").length;
-  const be = closed.filter((c) => c.outcome === "breakeven").length;
+  const scratch = closed.filter((c) => c.outcome === "scratch").length;
+  const decisive = wins + losses; // scratches are neutral
   const totalR = closed.reduce((a, c) => a + (c.rMultiple || 0), 0);
   const total = closed.length;
   ledger.stats = {
     total,
     wins,
     losses,
-    breakeven: be,
+    scratch,
     open: ledger.open.length,
-    winRate: total ? Math.round((wins / total) * 100) : 0,
+    winRate: decisive ? Math.round((wins / decisive) * 100) : 0,
     totalR: Number(totalR.toFixed(2)),
     avgR: total ? Number((totalR / total).toFixed(2)) : 0,
   };
@@ -853,13 +941,24 @@ function perPairBlock(s) {
   );
 }
 
-async function analyzePairs(snapshots, perfFeedback) {
+async function analyzePairs(snapshots, perfFeedback, openTrades = []) {
   const blocks = snapshots.map(perPairBlock).join("\n");
+  const openBlock = openTrades.length
+    ? `\nOPEN POSITIONS — review each (hold or close). The desk handles stop-trailing; ` +
+      `your job is judgement: 'close' if the REASON for the trade has broken (trend ` +
+      `flipped against it, momentum reversed, fresh news risk) — be willing to cut. ` +
+      `Otherwise 'hold'.\n` +
+      openTrades.map((o) =>
+        `[${o.pair}] ${o.direction.toUpperCase()} entry ${o.entry} stop ${o.currentStop} ` +
+        `stage ${o.stage} peak +${o.peakR}R`
+      ).join("\n") + "\n"
+    : "";
   const prompt =
     `You are a senior FX analyst on a rules-based desk. For EACH pair below, decide ` +
     `the single highest-probability trade from the computed indicators ONLY, and ` +
     `return one signal object per pair (include its "pair").\n\n` +
     (perfFeedback ? `PERFORMANCE FEEDBACK (learn from your own results):\n${perfFeedback}\n\n` : "") +
+    openBlock + "\n" +
     `Your priority: PRECISION over quantity. Only output buy/sell when the setup is ` +
     `genuinely high-probability — otherwise no_trade. A missed trade costs nothing; a ` +
     `bad trade costs money.\n\n` +
@@ -883,16 +982,28 @@ async function analyzePairs(snapshots, perfFeedback) {
     `Don't rationalise a weak setup.\n\n` +
     `A skipped trade is a professional result. Technical research, not financial advice.\n\n` +
     blocks +
-    `\n\nReturn ONLY a JSON object of this exact shape (one object per pair):\n` +
+    `\n\nReturn ONLY a JSON object of this exact shape:\n` +
     `{"signals":[{"pair":"EUR/USD","direction":"buy|sell|no_trade","confidence":0-100,` +
     `"timeframe":"","headline":"","entry":"","entry_price":0,"stop_loss":"","stop_loss_price":0,` +
     `"take_profit_1":"","tp1_price":0,"take_profit_2":"","tp2_price":0,"risk_reward":"",` +
-    `"confluence":[""],"technical_reasoning":"","invalidation":"","news_risk":"","concerns":""}]}`;
+    `"confluence":[""],"technical_reasoning":"","invalidation":"","news_risk":"","concerns":""}]` +
+    (openTrades.length
+      ? `,"reviews":[{"pair":"EUR/USD","verdict":"hold|close","reason":""}]`
+      : "") +
+    `}`;
 
   const responseSchema = {
     type: "OBJECT",
     properties: {
       signals: { type: "ARRAY", items: { type: "OBJECT", properties: SIGNAL_PROPS, required: SIGNAL_REQUIRED } },
+      reviews: {
+        type: "ARRAY",
+        items: {
+          type: "OBJECT",
+          properties: { pair: STR, verdict: { type: "STRING", enum: ["hold", "close"] }, reason: STR },
+          required: ["pair", "verdict", "reason"],
+        },
+      },
     },
     required: ["signals"],
   };
@@ -911,7 +1022,11 @@ async function analyzePairs(snapshots, perfFeedback) {
     }
     out[sig.pair.toUpperCase()] = sig;
   }
-  return out;
+  const reviews = {};
+  for (const rv of parsed.reviews || []) {
+    if (rv && rv.pair) reviews[rv.pair.toUpperCase()] = rv;
+  }
+  return { signals: out, reviews };
 }
 
 // SELF-CRITIQUE — a second pass where the AI acts as a strict risk manager and
@@ -1112,12 +1227,19 @@ async function dispatchAlerts(opened, closed, manage = [], ledger = null) {
     }
   }
   for (const c of closed) {
-    const win = c.outcome === "win";
+    const icon = c.outcome === "win" ? "✅ WIN" : c.outcome === "loss" ? "❌ LOSS" : "⚪ SCRATCH";
+    const rtxt = `${c.rMultiple > 0 ? "+" : ""}${c.rMultiple}R`;
+    const ex = c.exit || "";
+    const how =
+      ex === "target" ? "hit final target" :
+      ex === "stop" ? "hit stop" :
+      ex === "breakeven" ? "stopped at breakeven — protected from a loss" :
+      ex.startsWith("trail") ? `trailed out, profit locked (${ex})` :
+      ex === "managed-close" || ex === "ai-close" ? `closed early — ${c.exitReason || "reason broke"}` :
+      "closed";
     items.push({
       key: `R:${c.id || c.pair + ":" + c.openedTs}`,
-      text:
-        `${win ? "✅ WIN" : "❌ LOSS"} ${c.pair} ${String(c.direction || "").toUpperCase()} ` +
-        `${win ? "hit TP" : "hit SL"} (${c.rMultiple > 0 ? "+" : ""}${c.rMultiple}R)`,
+      text: `${icon} ${c.pair} ${String(c.direction || "").toUpperCase()} ${how} (${rtxt})`,
     });
   }
   for (const o of opened) {

@@ -78,6 +78,7 @@
         .hist .res { font-weight: 800; padding: 3px 10px; border-radius: 999px; font-size: .72rem; }
         .hist .res.win { background: var(--green); color: #04101a; }
         .hist .res.loss { background: var(--red); color: #fff; }
+        .hist .res.scratch { background: #475569; color: #fff; }
         .hist .pr { font-weight: 700; min-width: 70px; }
         .hist .r { font-weight: 700; }
         .hist .small { color: var(--muted); font-size: .78rem; }
@@ -156,7 +157,9 @@
                 ['Win rate', stats.winRate + '%', ''],
                 ['Avg R', (stats.avgR > 0 ? '+' : '') + stats.avgR, sign(stats.avgR)],
                 ['Total R', (stats.totalR > 0 ? '+' : '') + stats.totalR, sign(stats.totalR)],
-                ['Closed', stats.total, ''],
+                ['Wins', stats.wins ?? 0, 'pos'],
+                ['Losses', stats.losses ?? 0, 'neg'],
+                ['Saved', stats.scratch ?? 0, ''],
                 ['Open', stats.open, ''],
             ];
             track.innerHTML = pills.map(p =>
@@ -218,31 +221,38 @@
 
         function openRow(o) {
             const dur = fmtDur(Date.now() - (o.openedTs || Date.parse(o.openedAt)));
-            let flag = '';
-            if (o.warned) flag = '<span class="res loss">⚠ CLOSE / REASSESS</span>';
-            else if (o.lockedR != null) flag = '<span class="tag warn">' +
-                (o.lockedR === 0 ? '🎯 +1R — breakeven' : '📈 trail stop → lock +' + o.lockedR + 'R') +
-                (o.trailStop ? ' @ ' + esc(o.trailStop) : '') + '</span>';
+            const stage = o.stage || 'initial';
+            const stop = o.currentStop != null ? o.currentStop : o.sl;
+            const stageTag =
+                stage === 'breakeven' ? '<span class="tag warn">🎯 stop at breakeven — risk-free</span>'
+                : (o.lockedR > 0 || stage.indexOf('locked') >= 0) ? '<span class="tag warn">📈 ' + esc(stage) + '</span>'
+                : '';
+            const peak = (o.peakR != null && o.peakR > 0) ? ' · peak +' + o.peakR + 'R' : '';
             return `<div class="openrow">
                 <span class="dir ${esc(o.direction)}">${esc((o.direction||'').toUpperCase())}</span>
                 <span class="pr">${esc(o.pair)}</span>
-                <span class="small">entry <b>${esc(o.entry)}</b> · SL <b>${esc(o.sl)}</b> · TP <b>${esc(o.tp1)}</b></span>
-                <span class="small">open ${esc(dur)}</span>
-                ${flag}
+                <span class="small">entry <b>${esc(o.entry)}</b> · stop <b>${esc(stop)}</b> · target <b>${esc(o.tp2 != null ? o.tp2 : o.tp1)}</b></span>
+                <span class="small">open ${esc(dur)}${esc(peak)}</span>
+                ${stageTag}
             </div>`;
         }
 
         function histRow(h) {
-            const win = h.outcome === 'win';
-            const hit = win ? 'hit TP' : (h.outcome === 'loss' ? 'hit SL' : esc(h.outcome));
+            const o = h.outcome;
+            const cls = o === 'win' ? 'win' : o === 'loss' ? 'loss' : 'scratch';
+            const lbl = o === 'win' ? 'WIN' : o === 'loss' ? 'LOSS' : 'SCRATCH';
+            const ex = h.exit || '';
+            const how = ex === 'target' ? 'hit target' : ex === 'stop' ? 'hit stop'
+                : ex === 'breakeven' ? 'breakeven — saved from a loss' : ex.indexOf('trail') >= 0 ? 'trailed out (' + esc(ex) + ')'
+                : (ex === 'managed-close' || ex === 'ai-close') ? 'closed early' + (h.exitReason ? ' — ' + esc(h.exitReason) : '') : esc(o);
             const dur = fmtDur(Date.parse(h.closedAt) - Date.parse(h.openedAt));
             const r = (h.rMultiple > 0 ? '+' : '') + (h.rMultiple ?? 0) + 'R';
+            const rcls = h.rMultiple > 0 ? 'pos' : h.rMultiple < 0 ? 'neg' : '';
             return `<div class="hist">
-                <span class="res ${win ? 'win' : 'loss'}">${win ? 'WIN' : 'LOSS'}</span>
+                <span class="res ${cls}">${lbl}</span>
                 <span class="pr">${esc(h.pair)}</span>
-                <span class="small">${esc((h.direction||'').toUpperCase())} · ${hit}</span>
-                <span class="small">entry ${esc(h.entry)} → ${win ? 'TP ' + esc(h.tp1) : 'SL ' + esc(h.sl)}</span>
-                <span class="r ${win ? 'pos' : 'neg'}">${esc(r)}</span>
+                <span class="small">${esc((h.direction||'').toUpperCase())} · ${how}</span>
+                <span class="r ${rcls}">${esc(r)}</span>
                 <span class="small">lasted ${esc(dur)}</span>
                 <span class="small">closed ${esc(h.closedAt ? new Date(h.closedAt).toLocaleString() : '')}</span>
             </div>`;
