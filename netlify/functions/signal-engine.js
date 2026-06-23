@@ -77,14 +77,18 @@ exports.handler = async (event) => {
     closed: [],
     stats: emptyStats(),
   };
+  ledger.pending = ledger.pending || []; // setups waiting for a pullback entry
 
   // ADAPT: the engine's real record, fed back so the AI learns from outcomes,
   // and per-pair calibration so the quality score reflects where it actually wins.
   const perfFeedback = performanceFeedback(ledger);
   const byPairStats = calibrationByPair(ledger);
 
-  const justClosed = []; // trades resolved this run (for result alerts)
-  const manageAlerts = []; // open trades turning bad / hitting +1R (exit mgmt)
+  const justClosed = [];     // trades resolved this run (for result alerts)
+  const manageAlerts = [];   // open trades turning bad / hitting +1R (exit mgmt)
+  const justEntered = [];    // pending setups that just TRIGGERED (enter-now alerts)
+  const justPending = [];    // new setups created this run (heads-up alerts)
+  const cancelledSetups = []; // setups that expired/invalidated
 
   // 1. Build snapshots + grade open trades in parallel (NO AI yet — just data).
   const built = await Promise.all(
@@ -92,6 +96,8 @@ exports.handler = async (event) => {
       try {
         const snapshot = await buildSnapshot(pair, calendar);
         evaluateOpenSignals(pair, snapshot, ledger, justClosed, manageAlerts);
+        // Trigger pending pullback entries / expire stale setups.
+        checkPending(pair, snapshot, ledger, justEntered, cancelledSetups);
         return { pair, snapshot };
       } catch (err) {
         console.error(`${pair} data failed:`, err);
@@ -144,7 +150,6 @@ exports.handler = async (event) => {
 
   // 3. Assemble records, score, track.
   const signals = [];
-  const justOpened = []; // new actionable signals this run (for entry alerts)
   for (const b of built) {
     if (b.error) {
       signals.push({ pair: b.pair, error: b.error });
@@ -192,14 +197,27 @@ exports.handler = async (event) => {
     await store.setJSON(`pair:${keyFor(b.pair)}`, record);
     signals.push(record);
 
-    if (trackNewSignal(record, b.snapshot, ledger)) justOpened.push(record);
+    // DON'T CHASE: a fresh high-quality signal becomes a PENDING setup (waits for
+    // a pullback), not an instant market entry. If the signal flipped against an
+    // existing setup, cancel that setup.
+    if (record.direction === "buy" || record.direction === "sell") {
+      const opp = ledger.pending.find((p) => p.pair === b.pair && p.direction !== record.direction);
+      if (opp) {
+        ledger.pending = ledger.pending.filter((p) => p !== opp);
+        cancelledSetups.push({ ...opp, reason: "signal flipped direction" });
+      }
+      const p = createPending(record, b.snapshot, ledger);
+      if (p) justPending.push(p);
+    }
   }
 
   recomputeStats(ledger);
 
-  // Notifications first (dedup keys are recorded on the ledger), THEN persist the
-  // ledger so a sent alert is never emailed twice.
-  await dispatchAlerts(justOpened, justClosed, manageAlerts, ledger);
+  // Notifications first (dedup keys recorded on the ledger), THEN persist.
+  await dispatchAlerts(
+    { entered: justEntered, pending: justPending, cancelled: cancelledSetups, closed: justClosed, manage: manageAlerts },
+    ledger
+  );
 
   await store.setJSON("ledger", ledger);
   await store.setJSON("latest", {
@@ -208,12 +226,13 @@ exports.handler = async (event) => {
     stats: ledger.stats,
     calibration: ledger.stats, // historical hit-rate the dashboard surfaces
     open: ledger.open,              // currently tracked trades (for duration)
-    history: ledger.closed.slice(0, 25), // resolved trades: hit TP (win) vs SL (loss)
+    pending: ledger.pending,        // setups waiting for a pullback entry
+    history: ledger.closed.slice(0, 25), // resolved trades
   });
 
   console.log(
     "signal-engine done:", signals.length, "pairs; winRate", ledger.stats.winRate,
-    "| opened", justOpened.length, "closed", justClosed.length
+    "| entered", justEntered.length, "pending", justPending.length, "closed", justClosed.length
   );
   return { statusCode: 200, body: JSON.stringify({ count: signals.length }) };
 };
@@ -836,31 +855,125 @@ function performanceFeedback(ledger) {
   );
 }
 
-// Compute exact, always-valid entry/stop/targets from ATR + structure, so we
-// never depend on a small model's arithmetic. Mutates the signal in place.
-function applyComputedLevels(sig, s) {
-  const price = s.price;
-  const atr = s.atr && s.atr > 0 ? s.atr : price * 0.001;
-  const buy = sig.direction === "buy";
-  // Stop: ~1.5x ATR, but beyond the recent 1H swing against us; clamp 1.5–3.5 ATR.
+// Compute exact, always-valid stop/targets from a given ENTRY price + ATR +
+// structure. Reused for both market entries and pullback (don't-chase) entries.
+function computeLevels(entry, buy, s) {
+  const atr = s.atr && s.atr > 0 ? s.atr : entry * 0.001;
   let stopDist = 1.5 * atr;
   const swing = buy ? s.h1.swingLow : s.h1.swingHigh;
   if (Number.isFinite(swing)) {
-    const swingDist = Math.abs(price - swing) + 0.3 * atr;
+    const swingDist = Math.abs(entry - swing) + 0.3 * atr;
     stopDist = Math.min(Math.max(stopDist, swingDist), 3.5 * atr);
   }
-  const entry = price;
-  const sl = buy ? entry - stopDist : entry + stopDist;
-  const tp1 = buy ? entry + 1.8 * stopDist : entry - 1.8 * stopDist; // 1.8:1
-  const tp2 = buy ? entry + 3.0 * stopDist : entry - 3.0 * stopDist; // 3:1
-  const dp = price >= 10 ? 3 : 5; // JPY pairs ~3dp, others ~5dp
+  const dp = entry >= 10 ? 3 : 5;
   const rd = (x) => Number(x.toFixed(dp));
+  return {
+    entry: rd(entry),
+    sl: rd(buy ? entry - stopDist : entry + stopDist),
+    tp1: rd(buy ? entry + 1.8 * stopDist : entry - 1.8 * stopDist),
+    tp2: rd(buy ? entry + 3.0 * stopDist : entry - 3.0 * stopDist),
+  };
+}
 
-  sig.entry_price = rd(entry); sig.stop_loss_price = rd(sl);
-  sig.tp1_price = rd(tp1); sig.tp2_price = rd(tp2);
-  sig.entry = String(rd(entry)); sig.stop_loss = String(rd(sl));
-  sig.take_profit_1 = String(rd(tp1)); sig.take_profit_2 = String(rd(tp2));
+// Mutates a signal in place with computed levels (entry = current price).
+function applyComputedLevels(sig, s) {
+  const lv = computeLevels(s.price, sig.direction === "buy", s);
+  sig.entry_price = lv.entry; sig.stop_loss_price = lv.sl;
+  sig.tp1_price = lv.tp1; sig.tp2_price = lv.tp2;
+  sig.entry = String(lv.entry); sig.stop_loss = String(lv.sl);
+  sig.take_profit_1 = String(lv.tp1); sig.take_profit_2 = String(lv.tp2);
   sig.risk_reward = "1:1.8";
+}
+
+// ===========================================================================
+// DON'T CHASE — pending pullback entries.
+// A new high-quality setup doesn't enter at market; it WAITS for price to pull
+// back to a better level. We email a heads-up now, then email "ENTER NOW" the
+// moment price reaches the level (any time of day). Expires if it never pulls back.
+// ===========================================================================
+const PULLBACK_ATR = Number(process.env.PULLBACK_ATR || 0.5);     // how deep a pullback to wait for
+const ENTRY_WINDOW_HOURS = Number(process.env.ENTRY_WINDOW_HOURS || 6); // setup validity
+
+function createPending(record, snapshot, ledger) {
+  const dir = record.direction;
+  if (dir !== "buy" && dir !== "sell") return null;
+  if ((record.qualityScore || 0) < NOTIFY_MIN_SCORE) return null;
+  // MULTIPLE trades per pair are allowed (new setups can stack into more opens).
+  // Only block a duplicate PENDING of the same pair+direction so we don't recreate
+  // the identical setup every 30 min while it's still waiting.
+  if ((ledger.pending || []).some((p) => p.pair === record.pair && p.direction === record.direction)) return null;
+
+  const buy = dir === "buy";
+  const price = snapshot.price;
+  const atr = snapshot.atr && snapshot.atr > 0 ? snapshot.atr : price * 0.001;
+  const dp = price >= 10 ? 3 : 5;
+  const entryZone = Number((buy ? price - PULLBACK_ATR * atr : price + PULLBACK_ATR * atr).toFixed(dp));
+
+  const p = {
+    id: `${keyFor(record.pair)}-P-${Date.now()}`,
+    pair: record.pair,
+    direction: dir,
+    entryZone,
+    refPrice: price,
+    qualityScore: record.qualityScore,
+    timeframe: record.timeframe,
+    headline: record.headline,
+    reasoning: record.technical_reasoning,
+    createdAt: record.generatedAt,
+    createdTs: Date.parse(record.generatedAt),
+    expiresAt: Date.parse(record.generatedAt) + ENTRY_WINDOW_HOURS * 3600000,
+  };
+  ledger.pending = ledger.pending || [];
+  ledger.pending.push(p);
+  return p;
+}
+
+// Per run: trigger pendings whose pullback level was reached → open the trade;
+// expire ones that never pulled back. Returns via the accumulators.
+function checkPending(pair, snapshot, ledger, justEntered, cancelled) {
+  ledger.pending = ledger.pending || [];
+  const raw = snapshot._h1raw;
+  const keep = [];
+  for (const p of ledger.pending) {
+    if (p.pair !== pair) { keep.push(p); continue; }
+    const buy = p.direction === "buy";
+
+    // Did price reach the entry zone since the setup was created?
+    let triggerTs = null;
+    if (raw && raw.datetimes) {
+      for (let i = 0; i < raw.datetimes.length; i++) {
+        if (tparseUTC(raw.datetimes[i]) <= p.createdTs) continue;
+        if (buy ? raw.lows[i] <= p.entryZone : raw.highs[i] >= p.entryZone) {
+          triggerTs = tparseUTC(raw.datetimes[i]);
+          break;
+        }
+      }
+    }
+
+    if (triggerTs != null) {
+      // ENTER: open the trade at the pullback level, sized from that entry.
+      const lv = computeLevels(p.entryZone, buy, snapshot);
+      const o = {
+        id: `${keyFor(pair)}-${Date.now()}`,
+        pair, direction: p.direction,
+        entry: lv.entry, sl: lv.sl, tp1: lv.tp1, tp2: lv.tp2,
+        timeframe: p.timeframe, qualityScore: p.qualityScore,
+        openedAt: new Date(triggerTs).toISOString(), openedTs: triggerTs,
+        peakR: 0, lockedR: -1, currentStop: lv.sl, stage: "initial", alertedLockedR: -1,
+        viaPullback: true,
+      };
+      ledger.open.push(o);
+      if (justEntered) justEntered.push(o);
+      continue; // removed from pending
+    }
+
+    if (Date.now() > p.expiresAt) {
+      if (cancelled) cancelled.push({ ...p, reason: "no pullback within " + ENTRY_WINDOW_HOURS + "h" });
+      continue; // expired, dropped
+    }
+    keep.push(p);
+  }
+  ledger.pending = keep;
 }
 
 // Deterministic guardrail — reject the AI's own inconsistent/illogical signals.
@@ -1200,9 +1313,40 @@ function qualityScore(s, signal, calibration) {
 // ===========================================================================
 // Each alert carries a stable key; we skip any key already sent (stored on the
 // ledger) so the SAME alert never emails twice — even if two runs overlap.
-async function dispatchAlerts(opened, closed, manage = [], ledger = null) {
+async function dispatchAlerts(events, ledger = null) {
+  const { entered = [], pending = [], cancelled = [], closed = [], manage = [] } = events || {};
   const sent = new Set((ledger && ledger.sentAlerts) || []);
   const items = []; // { key, text }
+
+  // ENTER NOW — a pending setup pulled back to its level and triggered.
+  for (const o of entered) {
+    const arrow = o.direction === "buy" ? "🟢 ENTER BUY" : "🔴 ENTER SELL";
+    items.push({
+      key: `ENT:${o.id}`,
+      text:
+        `${arrow} ${o.pair} NOW @ ${o.entry}  (score ${o.qualityScore})\n` +
+        `Stop ${o.sl}\nTP1 ${o.tp1}   TP2 ${o.tp2}\nR:R 1:1.8 · ${o.timeframe || ""}\n` +
+        `Price pulled back to the level — place the trade now.`,
+    });
+  }
+  // SETUP heads-up — watching for a pullback.
+  for (const p of pending) {
+    const arrow = p.direction === "buy" ? "👀 BUY SETUP" : "👀 SELL SETUP";
+    items.push({
+      key: `PEN:${p.id}`,
+      text:
+        `${arrow} ${p.pair}  (score ${p.qualityScore})\n` +
+        `Waiting for a pullback to ~${p.entryZone} to enter (valid ${ENTRY_WINDOW_HOURS}h). ` +
+        `I'll email you the moment it triggers.\n${p.reasoning || p.headline || ""}`,
+    });
+  }
+  // SETUP cancelled.
+  for (const p of cancelled) {
+    items.push({
+      key: `CAN:${p.id}`,
+      text: `✖ SETUP CANCELLED ${p.pair} ${String(p.direction || "").toUpperCase()} — ${p.reason || "no longer valid"}`,
+    });
+  }
 
   for (const m of manage) {
     const dir = String(m.direction || "").toUpperCase();
@@ -1242,11 +1386,6 @@ async function dispatchAlerts(opened, closed, manage = [], ledger = null) {
       text: `${icon} ${c.pair} ${String(c.direction || "").toUpperCase()} ${how} (${rtxt})`,
     });
   }
-  for (const o of opened) {
-    if ((o.qualityScore || 0) < NOTIFY_MIN_SCORE) continue; // only quality entries alert
-    items.push({ key: `E:${o.pair}:${o.entry_price}`, text: formatEntryAlert(o) });
-  }
-
   const fresh = items.filter((it) => !sent.has(it.key));
   if (!fresh.length) return;
 

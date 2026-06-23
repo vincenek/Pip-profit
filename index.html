@@ -114,6 +114,9 @@
             <div class="empty">Loading signals…</div>
         </div>
 
+        <h2 class="sec-title" id="pendingTitle" style="display:none;">⏳ Setups — waiting for a pullback to enter</h2>
+        <div id="pendingList"></div>
+
         <h2 class="sec-title" id="openTitle" style="display:none;">Open positions</h2>
         <div id="openList"></div>
 
@@ -133,6 +136,8 @@
         const runBtn = document.getElementById('runBtn');
         const openTitle = document.getElementById('openTitle');
         const openList = document.getElementById('openList');
+        const pendingTitle = document.getElementById('pendingTitle');
+        const pendingList = document.getElementById('pendingList');
         const histTitle = document.getElementById('histTitle');
         const histList = document.getElementById('histList');
 
@@ -219,6 +224,16 @@
             </div>`;
         }
 
+        function pendingRow(p) {
+            const expiresIn = p.expiresAt ? fmtDur(p.expiresAt - Date.now()) : '';
+            return `<div class="openrow">
+                <span class="dir ${esc(p.direction)}">${esc((p.direction||'').toUpperCase())}</span>
+                <span class="pr">${esc(p.pair)}</span>
+                <span class="small">waiting for pullback to <b>${esc(p.entryZone)}</b> · score ${esc(p.qualityScore)}</span>
+                <span class="tag warn">⏳ expires in ${esc(expiresIn)}</span>
+            </div>`;
+        }
+
         function openRow(o) {
             const dur = fmtDur(Date.now() - (o.openedTs || Date.parse(o.openedAt)));
             const stage = o.stage || 'initial';
@@ -270,6 +285,10 @@
                 const errs = all.filter(s => s.error);
                 grid.innerHTML = (ok.map(card).join('') + errs.map(errCard).join(''))
                     || '<div class="empty">No signals yet — hit “Run now”, or wait for the hourly run.</div>';
+
+                const pend = data.pending || [];
+                pendingTitle.style.display = pend.length ? '' : 'none';
+                pendingList.innerHTML = pend.map(pendingRow).join('');
 
                 const open = data.open || [];
                 openTitle.style.display = open.length ? '' : 'none';
