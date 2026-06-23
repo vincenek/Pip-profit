@@ -23,8 +23,21 @@ exports.handler = async (event) => {
   // for the engine handler we call below).
   try { if (event && event.blobs) connectLambda(event); } catch (e) { /* noop */ }
 
-  // ?test=1 → just verify notification channels (no engine run, no quota used).
   const qs = event && event.queryStringParameters;
+
+  // ?reset=1 → wipe the track record + open trades for a clean, honest start.
+  if (qs && (qs.reset === "1" || qs.reset === "true")) {
+    try {
+      const store = getStore("signals");
+      await store.setJSON("ledger", { open: [], closed: [], stats: {}, sentAlerts: [] });
+      await store.setJSON("latest", { generatedAt: new Date().toISOString(), signals: [], stats: {}, open: [], history: [] });
+      return { statusCode: 200, headers, body: JSON.stringify({ reset: true, message: "Track record and open trades cleared. Next run starts fresh." }, null, 2) };
+    } catch (err) {
+      return { statusCode: 500, headers, body: JSON.stringify({ error: String(err) }, null, 2) };
+    }
+  }
+
+  // ?test=1 → just verify notification channels (no engine run, no quota used).
   if (qs && (qs.test === "1" || qs.test === "true")) {
     try {
       const channels = await engine.testAlert();
