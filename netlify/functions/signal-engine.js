@@ -40,7 +40,7 @@
 
 const { getStore, connectLambda } = require("@netlify/blobs");
 
-const PAIRS = (process.env.SIGNAL_PAIRS || "EUR/USD,GBP/USD,USD/JPY,AUD/USD,USD/CAD,USD/CHF")
+const PAIRS = (process.env.SIGNAL_PAIRS || "EUR/USD,GBP/USD,USD/JPY")
   .split(",")
   .map((p) => p.trim().toUpperCase())
   .filter(Boolean);
@@ -170,6 +170,11 @@ exports.handler = async (event) => {
   }
 
   recomputeStats(ledger);
+
+  // Notifications first (dedup keys are recorded on the ledger), THEN persist the
+  // ledger so a sent alert is never emailed twice.
+  await dispatchAlerts(justOpened, justClosed, manageAlerts, ledger);
+
   await store.setJSON("ledger", ledger);
   await store.setJSON("latest", {
     generatedAt: new Date().toISOString(),
@@ -179,9 +184,6 @@ exports.handler = async (event) => {
     open: ledger.open,              // currently tracked trades (for duration)
     history: ledger.closed.slice(0, 25), // resolved trades: hit TP (win) vs SL (loss)
   });
-
-  // Notifications: closed results + new high-quality entries + exit management.
-  await dispatchAlerts(justOpened, justClosed, manageAlerts);
 
   console.log(
     "signal-engine done:", signals.length, "pairs; winRate", ledger.stats.winRate,
@@ -286,7 +288,7 @@ function sessionInfo(pair) {
 
 // Cached candle fetch — reuse data for up to ~55 min so repeated runs (Run-now
 // clicks, overlapping cron) don't burn Twelve Data's 8-calls/minute free limit.
-const CANDLE_CACHE_MIN = Number(process.env.CANDLE_CACHE_MIN || 55);
+const CANDLE_CACHE_MIN = Number(process.env.CANDLE_CACHE_MIN || 25);
 async function getCandles(pair) {
   const store = getStore("signals");
   const key = `candles:${keyFor(pair)}`;
@@ -1081,52 +1083,63 @@ function qualityScore(s, signal, calibration) {
 // ===========================================================================
 // NOTIFICATIONS — Telegram / WhatsApp(CallMeBot) / Email(Resend), all optional
 // ===========================================================================
-async function dispatchAlerts(opened, closed, manage = []) {
-  const msgs = [];
-  // Exit management first — these are the most time-sensitive.
+// Each alert carries a stable key; we skip any key already sent (stored on the
+// ledger) so the SAME alert never emails twice — even if two runs overlap.
+async function dispatchAlerts(opened, closed, manage = [], ledger = null) {
+  const sent = new Set((ledger && ledger.sentAlerts) || []);
+  const items = []; // { key, text }
+
   for (const m of manage) {
     const dir = String(m.direction || "").toUpperCase();
     if (m.type === "close") {
-      msgs.push(
-        `⚠️ CLOSE / REASSESS ${m.pair} ${dir}\n` +
-        `Reason: ${m.reason}.\nNow ${m.rNow >= 0 ? "+" : ""}${m.rNow.toFixed(1)}R (entry ${m.entry}).\n` +
-        `Consider exiting early or tightening your stop.`
-      );
+      items.push({
+        key: `M:close:${m.pair}:${m.entry}`,
+        text:
+          `⚠️ CLOSE / REASSESS ${m.pair} ${dir}\n` +
+          `Reason: ${m.reason}.\nNow ${m.rNow >= 0 ? "+" : ""}${m.rNow.toFixed(1)}R (entry ${m.entry}).\n` +
+          `Consider exiting early or tightening your stop.`,
+      });
     } else if (m.type === "trail") {
-      if (m.lockedR === 0) {
-        msgs.push(
-          `🎯 TAKE ACTION ${m.pair} ${dir} is +${m.rNow.toFixed(1)}R\n` +
-          `You've hit +1R. Lock it in: take partial profit and move your stop to ` +
-          `breakeven (${m.newStop}) so the rest runs risk-free toward TP — or just ` +
-          `close to bank it.`
-        );
-      } else {
-        msgs.push(
-          `📈 TRAIL ${m.pair} ${dir} now +${m.rNow.toFixed(1)}R\n` +
-          `Move your stop up to ${m.newStop} to lock in +${m.lockedR}R and keep ` +
-          `riding the trend toward TP.`
-        );
-      }
+      items.push({
+        key: `M:trail:${m.pair}:${m.entry}:${m.lockedR}`,
+        text: m.lockedR === 0
+          ? `🎯 TAKE ACTION ${m.pair} ${dir} is +${m.rNow.toFixed(1)}R\n` +
+            `You've hit +1R. Lock it in: take partial profit and move your stop to ` +
+            `breakeven (${m.newStop}) so the rest runs risk-free — or close to bank it.`
+          : `📈 TRAIL ${m.pair} ${dir} now +${m.rNow.toFixed(1)}R\n` +
+            `Move your stop up to ${m.newStop} to lock in +${m.lockedR}R and keep riding toward TP.`,
+      });
     }
   }
   for (const c of closed) {
     const win = c.outcome === "win";
-    msgs.push(
-      `${win ? "✅ WIN" : "❌ LOSS"} ${c.pair} ${String(c.direction || "").toUpperCase()} ` +
-      `${win ? "hit TP" : "hit SL"} (${c.rMultiple > 0 ? "+" : ""}${c.rMultiple}R)`
-    );
+    items.push({
+      key: `R:${c.id || c.pair + ":" + c.openedTs}`,
+      text:
+        `${win ? "✅ WIN" : "❌ LOSS"} ${c.pair} ${String(c.direction || "").toUpperCase()} ` +
+        `${win ? "hit TP" : "hit SL"} (${c.rMultiple > 0 ? "+" : ""}${c.rMultiple}R)`,
+    });
   }
   for (const o of opened) {
     if ((o.qualityScore || 0) < NOTIFY_MIN_SCORE) continue; // only quality entries alert
-    msgs.push(formatEntryAlert(o));
+    items.push({ key: `E:${o.pair}:${o.entry_price}`, text: formatEntryAlert(o) });
   }
-  if (!msgs.length) return;
-  const text = "📊 FX Signal Desk\n\n" + msgs.join("\n\n");
+
+  const fresh = items.filter((it) => !sent.has(it.key));
+  if (!fresh.length) return;
+
+  const text = "📊 FX Signal Desk\n\n" + fresh.map((it) => it.text).join("\n\n");
   await Promise.all([
     sendTelegram(text).catch((e) => console.warn("telegram:", String(e))),
     sendWhatsApp(text).catch((e) => console.warn("whatsapp:", String(e))),
     sendEmail("FX Signal Desk alert", text).catch((e) => console.warn("email:", String(e))),
   ]);
+
+  // Record what we sent so it never goes out again.
+  if (ledger) {
+    for (const it of fresh) sent.add(it.key);
+    ledger.sentAlerts = Array.from(sent).slice(-300);
+  }
 }
 
 function formatEntryAlert(s) {

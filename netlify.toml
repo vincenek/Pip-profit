@@ -9,7 +9,6 @@
 # Plain scheduled function (30s budget) — runs all pairs in parallel with fast
 # Gemini Flash, well inside the limit. (Background functions can't be scheduled
 # on Netlify and need a paid plan, so this is the correct free setup.)
-# "@hourly" = once per hour. Use a cron string for finer control, e.g.
-# "*/30 * * * *" for every 30 minutes.
+# Runs every 30 minutes. "@hourly" or "*/15 * * * *" also work.
 [functions."signal-engine"]
-  schedule = "@hourly"
+  schedule = "*/30 * * * *"
