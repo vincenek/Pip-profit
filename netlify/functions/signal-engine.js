@@ -227,7 +227,7 @@ exports.handler = async (event) => {
     calibration: ledger.stats, // historical hit-rate the dashboard surfaces
     open: ledger.open,              // currently tracked trades (for duration)
     pending: ledger.pending,        // setups waiting for a pullback entry
-    history: ledger.closed.slice(0, 25), // resolved trades
+    history: ledger.closed, // ALL resolved trades — nothing hidden
   });
 
   console.log(
@@ -693,7 +693,7 @@ function evaluateOpenSignals(pair, snapshot, ledger, justClosed, manageAlerts) {
     still.push(o);
   }
   ledger.open = ledger.open.filter((o) => o.pair !== pair).concat(still.filter((o) => o.pair === pair));
-  ledger.closed = ledger.closed.slice(0, 200);
+  ledger.closed = ledger.closed.slice(0, 5000); // keep essentially everything
 }
 
 function currentR(o, price) {

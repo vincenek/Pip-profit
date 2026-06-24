@@ -296,6 +296,7 @@
 
                 const hist = data.history || [];
                 histTitle.style.display = hist.length ? '' : 'none';
+                histTitle.textContent = `Results — all ${hist.length} closed trade${hist.length === 1 ? '' : 's'} (TP vs SL, every one kept)`;
                 histList.innerHTML = hist.map(histRow).join('');
 
                 statusEl.textContent = 'updated ' + new Date().toLocaleTimeString();
