@@ -90,30 +90,44 @@ exports.handler = async (event) => {
   const justPending = [];    // new setups created this run (heads-up alerts)
   const cancelledSetups = []; // setups that expired/invalidated
 
-  // 1. Build snapshots + grade open trades in parallel (NO AI yet — just data).
+  // We hunt NEW setups only on the focus pairs (PAIRS), but we MANAGE every open
+  // trade / pending setup no matter its pair — so trades on pairs we've stopped
+  // scanning (e.g. after narrowing the list) still get trailed, closed, and graded.
+  const focusSet = new Set(PAIRS);
+  const extraPairs = [
+    ...new Set([
+      ...ledger.open.map((o) => o.pair),
+      ...ledger.pending.map((p) => p.pair),
+    ]),
+  ].filter((p) => !focusSet.has(p));
+  const allPairs = [...PAIRS, ...extraPairs];
+
+  // 1. Build snapshots + grade/manage open trades in parallel (NO AI yet).
   const built = await Promise.all(
-    PAIRS.map(async (pair) => {
+    allPairs.map(async (pair) => {
+      const isFocus = focusSet.has(pair);
       try {
         const snapshot = await buildSnapshot(pair, calendar);
         evaluateOpenSignals(pair, snapshot, ledger, justClosed, manageAlerts);
-        // Trigger pending pullback entries / expire stale setups.
         checkPending(pair, snapshot, ledger, justEntered, cancelledSetups);
-        return { pair, snapshot };
+        return { pair, snapshot, isFocus };
       } catch (err) {
         console.error(`${pair} data failed:`, err);
-        return { pair, error: String(err) };
+        return { pair, error: String(err), isFocus };
       }
     })
   );
 
-  // 2. ONE Gemini call for ALL pairs — 3x fewer requests = stays in free quota.
+  // 2. ONE AI call — analyze ONLY the focus pairs for NEW signals; but let the AI
+  //    review ALL open trades (incl. non-focus) so it can close any of them.
   const okBuilt = built.filter((b) => !b.error);
+  const focusBuilt = okBuilt.filter((b) => b.isFocus);
   let signalByPair = {};
   let aiReviews = {};
   let aiError = null;
-  if (okBuilt.length) {
+  if (focusBuilt.length || ledger.open.length) {
     try {
-      const res = await analyzePairs(okBuilt.map((b) => b.snapshot), perfFeedback, ledger.open);
+      const res = await analyzePairs(focusBuilt.map((b) => b.snapshot), perfFeedback, ledger.open);
       signalByPair = res.signals || {};
       aiReviews = res.reviews || {};
     } catch (err) {
@@ -148,9 +162,11 @@ exports.handler = async (event) => {
     ledger.open = stillOpen;
   }
 
-  // 3. Assemble records, score, track.
+  // 3. Assemble records, score, track NEW signals — focus pairs only.
+  //    (Non-focus pairs are managed above but don't generate new signals.)
   const signals = [];
   for (const b of built) {
+    if (!b.isFocus) continue; // manage-only pair — no new signal
     if (b.error) {
       signals.push({ pair: b.pair, error: b.error });
       continue;
