@@ -161,22 +161,57 @@
             ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c]));
 
         // ---- Risk manager: account $ + risk % -> exact lot size per trade ----
+        // Persisted SERVER-SIDE (not just this browser) so the dashboard AND the
+        // email alerts recommend the same lot size everywhere, on any device.
         acctEl.value = localStorage.getItem('acct') || '';
         riskEl.value = localStorage.getItem('riskpct') || '';
         function getRisk() {
             return { account: parseFloat(acctEl.value) || 0, riskPct: parseFloat(riskEl.value) || 0 };
         }
+        function updateRiskNote() {
+            const { account, riskPct } = getRisk();
+            riskNote.textContent = (account > 0 && riskPct > 0)
+                ? `Risking $${(account * riskPct / 100).toFixed(2)} per trade (${riskPct}% of $${account}). Saved — used in emails too.`
+                : 'Set your account & risk % — every signal, setup & email will show exact lot size.';
+        }
+        let riskSaveTimer = null;
         function onRiskChange() {
             localStorage.setItem('acct', acctEl.value);
             localStorage.setItem('riskpct', riskEl.value);
+            updateRiskNote();
+            load(); // re-render sizing immediately
+            // Debounce the server save while typing.
+            clearTimeout(riskSaveTimer);
+            riskSaveTimer = setTimeout(saveRiskToServer, 700);
+        }
+        async function saveRiskToServer() {
             const { account, riskPct } = getRisk();
-            riskNote.textContent = (account > 0 && riskPct > 0)
-                ? `Risking $${(account * riskPct / 100).toFixed(2)} per trade (${riskPct}% of $${account}).`
-                : 'Set your account & risk % — each trade will show exact lot size.';
-            load(); // re-render sizing
+            if (!account || !riskPct) return;
+            try {
+                await fetch('/.netlify/functions/settings', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ account, riskPct }),
+                });
+            } catch (e) { /* offline — localStorage still has it, will retry next edit */ }
+        }
+        async function loadRiskFromServer() {
+            try {
+                const res = await fetch('/.netlify/functions/settings');
+                const s = await res.json();
+                if (s && s.account > 0 && s.riskPct > 0) {
+                    acctEl.value = s.account;
+                    riskEl.value = s.riskPct;
+                    localStorage.setItem('acct', s.account);
+                    localStorage.setItem('riskpct', s.riskPct);
+                }
+            } catch (e) { /* use localStorage values already set */ }
+            updateRiskNote();
         }
         acctEl.addEventListener('input', onRiskChange);
         riskEl.addEventListener('input', onRiskChange);
+        updateRiskNote();
+        loadRiskFromServer().then(load); // server value wins once it arrives
 
         // Standard-lot forex position sizing for the majors (X/USD and USD/X).
         function computePosition(entry, stop, pair) {
@@ -288,10 +323,13 @@
 
         function pendingRow(p) {
             const expiresIn = p.expiresAt ? fmtDur(p.expiresAt - Date.now()) : '';
+            const pos = p.estSl != null ? computePosition(p.entryZone, p.estSl, p.pair) : null;
+            const posTag = pos ? `<span class="sizing">📐 ~${pos.lots.toFixed(2)} lots · $${pos.riskAmt.toFixed(0)} risk if triggered</span>` : '';
             return `<div class="openrow">
                 <span class="dir ${esc(p.direction)}">${esc((p.direction||'').toUpperCase())}</span>
                 <span class="pr">${esc(p.pair)}</span>
                 <span class="small">waiting for pullback to <b>${esc(p.entryZone)}</b> · score ${esc(p.qualityScore)}</span>
+                ${posTag}
                 <span class="tag warn">⏳ expires in ${esc(expiresIn)}</span>
             </div>`;
         }

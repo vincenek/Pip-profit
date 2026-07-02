@@ -53,17 +53,31 @@ const TD_KEY = process.env.TWELVEDATA_API_KEY;
 const NEWS_WINDOW_MIN = Number(process.env.NEWS_WINDOW_MIN || 60);
 // Only alert (and surface as high-conviction) signals at/above this quality score.
 const NOTIFY_MIN_SCORE = Number(process.env.NOTIFY_MIN_SCORE || 65);
-// Optional risk management for alerts: set both to include lot size in emails.
+// Fallback risk config (env vars) — overridden by the persisted /settings the
+// dashboard writes to, so the account $ you type in the app is what the whole
+// system (dashboard AND emails) uses everywhere, not just a local display.
 const ACCOUNT_SIZE = Number(process.env.ACCOUNT_SIZE || 0);
 const RISK_PCT = Number(process.env.RISK_PCT || 0);
 
+async function getRiskSettings(store) {
+  try {
+    const s = await store.get("settings", { type: "json" });
+    if (s && Number(s.account) > 0 && Number(s.riskPct) > 0) {
+      return { account: Number(s.account), riskPct: Number(s.riskPct) };
+    }
+  } catch (e) { /* fall through to env defaults */ }
+  return { account: ACCOUNT_SIZE, riskPct: RISK_PCT };
+}
+
 // Standard-lot position size for the majors (X/USD and USD/X). Returns null if
 // account/risk aren't configured.
-function positionSize(entry, stop, pair) {
-  if (!ACCOUNT_SIZE || !RISK_PCT || !entry || !stop) return null;
+function positionSize(entry, stop, pair, risk) {
+  const account = risk ? risk.account : ACCOUNT_SIZE;
+  const riskPct = risk ? risk.riskPct : RISK_PCT;
+  if (!account || !riskPct || !entry || !stop) return null;
   const stopDist = Math.abs(entry - stop);
   if (stopDist <= 0) return null;
-  const riskAmt = ACCOUNT_SIZE * RISK_PCT / 100;
+  const riskAmt = account * riskPct / 100;
   const [base, quote] = pair.split("/");
   const contract = 100000;
   const usdPerLotPerPrice = quote === "USD" ? contract : base === "USD" ? contract / entry : contract;
@@ -82,6 +96,7 @@ exports.handler = async (event) => {
   try { if (event && event.blobs) connectLambda(event); } catch (e) { /* noop */ }
 
   const store = getStore("signals");
+  const riskSettings = await getRiskSettings(store); // account $ + risk % (dashboard-set or env fallback)
 
   // Economic calendar once for the whole run.
   const calendar = await getCalendar().catch((e) => {
@@ -261,7 +276,8 @@ exports.handler = async (event) => {
   // Notifications first (dedup keys recorded on the ledger), THEN persist.
   await dispatchAlerts(
     { entered: justEntered, pending: justPending, cancelled: cancelledSetups, closed: justClosed, manage: manageAlerts },
-    ledger
+    ledger,
+    riskSettings
   );
 
   await store.setJSON("ledger", ledger);
@@ -273,6 +289,7 @@ exports.handler = async (event) => {
     open: ledger.open,              // currently tracked trades (for duration)
     pending: ledger.pending,        // setups waiting for a pullback entry
     history: ledger.closed, // ALL resolved trades — nothing hidden
+    riskSettings,                   // the account $/risk % currently driving position sizing
   });
 
   console.log(
@@ -954,22 +971,27 @@ function createPending(record, snapshot, ledger) {
   const dir = record.direction;
   if (dir !== "buy" && dir !== "sell") return null;
   if ((record.qualityScore || 0) < NOTIFY_MIN_SCORE) return null;
-  // MULTIPLE trades per pair are allowed (new setups can stack into more opens).
-  // Only block a duplicate PENDING of the same pair+direction so we don't recreate
-  // the identical setup every 30 min while it's still waiting.
+  // ANTI-STACKING: don't open a second bet on the same pair+direction while one
+  // is already active (open or waiting to trigger). This is what allows
+  // "multiple trades per pair" (a genuine reversal, or a new trade after the
+  // last one closed) WITHOUT letting the engine restack the identical call
+  // every 30-60 min during a sustained trend (was inflating trade counts).
   if ((ledger.pending || []).some((p) => p.pair === record.pair && p.direction === record.direction)) return null;
+  if ((ledger.open || []).some((o) => o.pair === record.pair && o.direction === record.direction)) return null;
 
   const buy = dir === "buy";
   const price = snapshot.price;
   const atr = snapshot.atr && snapshot.atr > 0 ? snapshot.atr : price * 0.001;
   const dp = price >= 10 ? 3 : 5;
   const entryZone = Number((buy ? price - PULLBACK_ATR * atr : price + PULLBACK_ATR * atr).toFixed(dp));
+  const estLevels = computeLevels(entryZone, buy, snapshot); // preview only — real levels are recomputed at trigger
 
   const p = {
     id: `${keyFor(record.pair)}-P-${Date.now()}`,
     pair: record.pair,
     direction: dir,
     entryZone,
+    estSl: estLevels.sl,
     refPrice: price,
     qualityScore: record.qualityScore,
     timeframe: record.timeframe,
@@ -1369,23 +1391,26 @@ function qualityScore(s, signal, calibration) {
 // ===========================================================================
 // Each alert carries a stable key; we skip any key already sent (stored on the
 // ledger) so the SAME alert never emails twice — even if two runs overlap.
-async function dispatchAlerts(events, ledger = null) {
+async function dispatchAlerts(events, ledger = null, riskSettings = null) {
   const { entered = [], pending = [], cancelled = [], closed = [], manage = [] } = events || {};
   const sent = new Set((ledger && ledger.sentAlerts) || []);
   const items = []; // { key, text }
 
+  const sizeLineFor = (entry, stop, pair) => {
+    const ps = positionSize(entry, stop, pair, riskSettings);
+    return ps
+      ? `\n📐 Size: ${ps.lots.toFixed(2)} lots (${Math.round(ps.units).toLocaleString()} units) · risk $${ps.riskAmt.toFixed(2)} · ${ps.pips.toFixed(0)} pips`
+      : "";
+  };
+
   // ENTER NOW — a pending setup pulled back to its level and triggered.
   for (const o of entered) {
     const arrow = o.direction === "buy" ? "🟢 ENTER BUY" : "🔴 ENTER SELL";
-    const ps = positionSize(o.entry, o.sl, o.pair);
-    const sizeLine = ps
-      ? `\n📐 Size: ${ps.lots.toFixed(2)} lots (${Math.round(ps.units).toLocaleString()} units) · risk $${ps.riskAmt.toFixed(2)} · ${ps.pips.toFixed(0)} pips`
-      : "";
     items.push({
       key: `ENT:${o.id}`,
       text:
         `${arrow} ${o.pair} NOW @ ${o.entry}  (score ${o.qualityScore})\n` +
-        `Stop ${o.sl}\nTP1 ${o.tp1}   TP2 ${o.tp2}\nR:R 1:1.8 · ${o.timeframe || ""}${sizeLine}\n` +
+        `Stop ${o.sl}\nTP1 ${o.tp1}   TP2 ${o.tp2}\nR:R 1:1.8 · ${o.timeframe || ""}${sizeLineFor(o.entry, o.sl, o.pair)}\n` +
         `Price pulled back to the level — place the trade now.`,
     });
   }
@@ -1397,7 +1422,7 @@ async function dispatchAlerts(events, ledger = null) {
       text:
         `${arrow} ${p.pair}  (score ${p.qualityScore})\n` +
         `Waiting for a pullback to ~${p.entryZone} to enter (valid ${ENTRY_WINDOW_HOURS}h). ` +
-        `I'll email you the moment it triggers.\n${p.reasoning || p.headline || ""}`,
+        `I'll email you the moment it triggers.${sizeLineFor(p.entryZone, p.estSl, p.pair)}\n${p.reasoning || p.headline || ""}`,
     });
   }
   // SETUP cancelled.
