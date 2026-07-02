@@ -85,6 +85,12 @@
         .openrow { display:flex; flex-wrap:wrap; align-items:center; gap:8px 16px; padding:12px 16px; background:var(--panel); border:1px solid var(--line); border-radius:10px; margin-bottom:8px; font-size:.85rem; }
         .openrow .dir { font-weight:800; font-size:.72rem; padding:3px 10px; border-radius:999px; }
         .openrow .dir.buy { background:var(--green); color:#04101a; } .openrow .dir.sell { background:var(--red); color:#fff; }
+        .risk-box { display:flex; flex-wrap:wrap; align-items:center; gap:10px 18px; background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:12px 16px; margin-bottom:22px; }
+        .risk-box .risk-label { font-weight:700; }
+        .risk-box label { font-size:.85rem; color:var(--muted); }
+        .risk-box input { width:90px; margin-left:6px; background:var(--panel2); border:1px solid var(--line); color:var(--text); border-radius:8px; padding:6px 8px; font:inherit; }
+        .risk-box .risk-note { font-size:.78rem; color:var(--muted); }
+        .sizing { color:var(--green); font-weight:700; }
         .disclaimer { color: var(--muted); font-size: .74rem; text-align: center; margin-top: 30px; opacity: .8; }
         a { color: var(--blue); }
     </style>
@@ -108,6 +114,13 @@
         </div>
 
         <div class="track" id="track"></div>
+
+        <div class="risk-box">
+            <span class="risk-label">💰 Risk manager</span>
+            <label>Account $ <input id="acct" type="number" min="0" step="10" placeholder="1000"></label>
+            <label>Risk % <input id="riskpct" type="number" min="0.1" max="10" step="0.1" placeholder="1"></label>
+            <span class="risk-note" id="riskNote">Set your account &amp; risk % — each trade will show exact lot size.</span>
+        </div>
 
         <h2 class="sec-title">Live signals</h2>
         <div class="grid" id="grid">
@@ -140,9 +153,57 @@
         const pendingList = document.getElementById('pendingList');
         const histTitle = document.getElementById('histTitle');
         const histList = document.getElementById('histList');
+        const acctEl = document.getElementById('acct');
+        const riskEl = document.getElementById('riskpct');
+        const riskNote = document.getElementById('riskNote');
 
         const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c =>
             ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c]));
+
+        // ---- Risk manager: account $ + risk % -> exact lot size per trade ----
+        acctEl.value = localStorage.getItem('acct') || '';
+        riskEl.value = localStorage.getItem('riskpct') || '';
+        function getRisk() {
+            return { account: parseFloat(acctEl.value) || 0, riskPct: parseFloat(riskEl.value) || 0 };
+        }
+        function onRiskChange() {
+            localStorage.setItem('acct', acctEl.value);
+            localStorage.setItem('riskpct', riskEl.value);
+            const { account, riskPct } = getRisk();
+            riskNote.textContent = (account > 0 && riskPct > 0)
+                ? `Risking $${(account * riskPct / 100).toFixed(2)} per trade (${riskPct}% of $${account}).`
+                : 'Set your account & risk % — each trade will show exact lot size.';
+            load(); // re-render sizing
+        }
+        acctEl.addEventListener('input', onRiskChange);
+        riskEl.addEventListener('input', onRiskChange);
+
+        // Standard-lot forex position sizing for the majors (X/USD and USD/X).
+        function computePosition(entry, stop, pair) {
+            const { account, riskPct } = getRisk();
+            entry = parseFloat(entry); stop = parseFloat(stop);
+            if (!account || !riskPct || !entry || !stop) return null;
+            const stopDist = Math.abs(entry - stop);
+            if (stopDist <= 0) return null;
+            const riskAmt = account * riskPct / 100;
+            const isJPY = /JPY/.test(pair);
+            const pips = stopDist / (isJPY ? 0.01 : 0.0001);
+            const [base, quote] = pair.split('/');
+            const contract = 100000; // 1 standard lot = 100k units
+            let usdPerLotPerPrice;
+            if (quote === 'USD') usdPerLotPerPrice = contract;         // e.g. EUR/USD
+            else if (base === 'USD') usdPerLotPerPrice = contract / entry; // e.g. USD/JPY
+            else usdPerLotPerPrice = contract;                          // cross (approx)
+            const riskPerLot = stopDist * usdPerLotPerPrice;
+            const lots = riskAmt / riskPerLot;
+            return { riskAmt, pips, lots, units: lots * contract };
+        }
+        function sizingLine(entry, stop, pair) {
+            const p = computePosition(entry, stop, pair);
+            if (!p) return '';
+            return `<div class="reason"><span class="sizing">📐 Trade ${p.lots.toFixed(2)} lots ` +
+                `(${Math.round(p.units).toLocaleString()} units) · risk $${p.riskAmt.toFixed(2)} · ${p.pips.toFixed(0)} pips</span></div>`;
+        }
 
         function fmtDur(ms) {
             if (!ms || ms < 0) return '';
@@ -199,6 +260,7 @@
                         <span>TP1 <b>${esc(s.take_profit_1)}</b></span>
                         <span>TP2 <b>${esc(s.take_profit_2)}</b></span>
                     </div>
+                    ${sizingLine(s.entry_price ?? s.entry, s.stop_loss_price ?? s.stop_loss, s.pair)}
                     <div class="reason"><b>Why:</b> ${esc(s.technical_reasoning)}</div>
                     ${s.invalidation ? `<div class="reason"><b>Invalidation:</b> ${esc(s.invalidation)}</div>` : ''}
                     ${s.concerns ? `<div class="reason" style="opacity:.85;color:var(--amber);"><b>AI self-check:</b> ${esc(s.concerns)}</div>` : ''}
@@ -243,11 +305,14 @@
                 : (o.lockedR > 0 || stage.indexOf('locked') >= 0) ? '<span class="tag warn">📈 ' + esc(stage) + '</span>'
                 : '';
             const peak = (o.peakR != null && o.peakR > 0) ? ' · peak +' + o.peakR + 'R' : '';
+            const pos = computePosition(o.entry, o.sl, o.pair);
+            const posTag = pos ? `<span class="sizing">📐 ${pos.lots.toFixed(2)} lots · $${pos.riskAmt.toFixed(0)} risk</span>` : '';
             return `<div class="openrow">
                 <span class="dir ${esc(o.direction)}">${esc((o.direction||'').toUpperCase())}</span>
                 <span class="pr">${esc(o.pair)}</span>
                 <span class="small">entry <b>${esc(o.entry)}</b> · stop <b>${esc(stop)}</b> · target <b>${esc(o.tp2 != null ? o.tp2 : o.tp1)}</b></span>
                 <span class="small">open ${esc(dur)}${esc(peak)}</span>
+                ${posTag}
                 ${stageTag}
             </div>`;
         }

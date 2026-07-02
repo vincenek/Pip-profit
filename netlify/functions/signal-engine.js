@@ -53,6 +53,24 @@ const TD_KEY = process.env.TWELVEDATA_API_KEY;
 const NEWS_WINDOW_MIN = Number(process.env.NEWS_WINDOW_MIN || 60);
 // Only alert (and surface as high-conviction) signals at/above this quality score.
 const NOTIFY_MIN_SCORE = Number(process.env.NOTIFY_MIN_SCORE || 65);
+// Optional risk management for alerts: set both to include lot size in emails.
+const ACCOUNT_SIZE = Number(process.env.ACCOUNT_SIZE || 0);
+const RISK_PCT = Number(process.env.RISK_PCT || 0);
+
+// Standard-lot position size for the majors (X/USD and USD/X). Returns null if
+// account/risk aren't configured.
+function positionSize(entry, stop, pair) {
+  if (!ACCOUNT_SIZE || !RISK_PCT || !entry || !stop) return null;
+  const stopDist = Math.abs(entry - stop);
+  if (stopDist <= 0) return null;
+  const riskAmt = ACCOUNT_SIZE * RISK_PCT / 100;
+  const [base, quote] = pair.split("/");
+  const contract = 100000;
+  const usdPerLotPerPrice = quote === "USD" ? contract : base === "USD" ? contract / entry : contract;
+  const lots = riskAmt / (stopDist * usdPerLotPerPrice);
+  const pips = stopDist / (/JPY/.test(pair) ? 0.01 : 0.0001);
+  return { riskAmt, lots, units: lots * contract, pips };
+}
 
 exports.handler = async (event) => {
   if (!process.env.GROQ_API_KEY && !process.env.GEMINI_API_KEY) {
@@ -89,6 +107,7 @@ exports.handler = async (event) => {
   const justEntered = [];    // pending setups that just TRIGGERED (enter-now alerts)
   const justPending = [];    // new setups created this run (heads-up alerts)
   const cancelledSetups = []; // setups that expired/invalidated
+  const marketOpen = forexMarketOpen(); // no new signals when forex is closed (weekend)
 
   // We hunt NEW setups only on the focus pairs (PAIRS), but we MANAGE every open
   // trade / pending setup no matter its pair — so trades on pairs we've stopped
@@ -125,7 +144,7 @@ exports.handler = async (event) => {
   let signalByPair = {};
   let aiReviews = {};
   let aiError = null;
-  if (focusBuilt.length || ledger.open.length) {
+  if (marketOpen && (focusBuilt.length || ledger.open.length)) {
     try {
       const res = await analyzePairs(focusBuilt.map((b) => b.snapshot), perfFeedback, ledger.open);
       signalByPair = res.signals || {};
@@ -169,6 +188,16 @@ exports.handler = async (event) => {
     if (!b.isFocus) continue; // manage-only pair — no new signal
     if (b.error) {
       signals.push({ pair: b.pair, error: b.error });
+      continue;
+    }
+    if (!marketOpen) {
+      // Forex closed (weekend) — show status, take no new setups.
+      signals.push({
+        pair: b.pair, direction: "no_trade", qualityScore: 0,
+        headline: "Forex market closed (weekend) — no new signals",
+        generatedAt: new Date().toISOString(),
+        snapshot: { price: b.snapshot.price, session: b.snapshot.session, regime: b.snapshot.regime },
+      });
       continue;
     }
     const signal = signalByPair[b.pair];
@@ -255,6 +284,17 @@ exports.handler = async (event) => {
 
 function keyFor(pair) {
   return pair.replace("/", "-");
+}
+
+// Forex is open Sun ~21:00 UTC → Fri ~21:00 UTC. Don't generate signals off
+// stale weekend data. (Management still runs; it's a no-op without new candles.)
+function forexMarketOpen(d = new Date()) {
+  const day = d.getUTCDay(); // 0=Sun … 6=Sat
+  const hour = d.getUTCHours();
+  if (day === 6) return false;               // Saturday
+  if (day === 0 && hour < 21) return false;  // Sunday before open
+  if (day === 5 && hour >= 21) return false; // Friday after close
+  return true;
 }
 
 // Parse a "YYYY-MM-DD HH:MM:SS" candle time as UTC, regardless of server timezone.
@@ -1337,11 +1377,15 @@ async function dispatchAlerts(events, ledger = null) {
   // ENTER NOW — a pending setup pulled back to its level and triggered.
   for (const o of entered) {
     const arrow = o.direction === "buy" ? "🟢 ENTER BUY" : "🔴 ENTER SELL";
+    const ps = positionSize(o.entry, o.sl, o.pair);
+    const sizeLine = ps
+      ? `\n📐 Size: ${ps.lots.toFixed(2)} lots (${Math.round(ps.units).toLocaleString()} units) · risk $${ps.riskAmt.toFixed(2)} · ${ps.pips.toFixed(0)} pips`
+      : "";
     items.push({
       key: `ENT:${o.id}`,
       text:
         `${arrow} ${o.pair} NOW @ ${o.entry}  (score ${o.qualityScore})\n` +
-        `Stop ${o.sl}\nTP1 ${o.tp1}   TP2 ${o.tp2}\nR:R 1:1.8 · ${o.timeframe || ""}\n` +
+        `Stop ${o.sl}\nTP1 ${o.tp1}   TP2 ${o.tp2}\nR:R 1:1.8 · ${o.timeframe || ""}${sizeLine}\n` +
         `Price pulled back to the level — place the trade now.`,
     });
   }
