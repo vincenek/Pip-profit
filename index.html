@@ -85,11 +85,19 @@
         .openrow { display:flex; flex-wrap:wrap; align-items:center; gap:8px 16px; padding:12px 16px; background:var(--panel); border:1px solid var(--line); border-radius:10px; margin-bottom:8px; font-size:.85rem; }
         .openrow .dir { font-weight:800; font-size:.72rem; padding:3px 10px; border-radius:999px; }
         .openrow .dir.buy { background:var(--green); color:#04101a; } .openrow .dir.sell { background:var(--red); color:#fff; }
-        .risk-box { display:flex; flex-wrap:wrap; align-items:center; gap:10px 18px; background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:12px 16px; margin-bottom:22px; }
+        .risk-box { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:14px 16px; margin-bottom:22px; }
+        .balance-row { display:flex; align-items:baseline; justify-content:space-between; flex-wrap:wrap; gap:6px 14px; margin-bottom:10px; padding-bottom:10px; border-bottom:1px solid var(--line); }
+        .balance-main { display:flex; align-items:baseline; gap:10px; }
+        .balance-label { font-size:.8rem; color:var(--muted); font-weight:700; }
+        .balance-amount { font-size:1.6rem; font-weight:800; }
+        .balance-amount.up { color:var(--green); } .balance-amount.down { color:var(--red); }
+        .balance-delta { font-size:.85rem; font-weight:700; }
+        .balance-delta.pos { color:var(--green); } .balance-delta.neg { color:var(--red); }
+        .risk-inputs { display:flex; flex-wrap:wrap; align-items:center; gap:10px 18px; }
         .risk-box .risk-label { font-weight:700; }
         .risk-box label { font-size:.85rem; color:var(--muted); }
         .risk-box input { width:90px; margin-left:6px; background:var(--panel2); border:1px solid var(--line); color:var(--text); border-radius:8px; padding:6px 8px; font:inherit; }
-        .risk-box .risk-note { font-size:.78rem; color:var(--muted); }
+        .risk-box .risk-note { font-size:.78rem; color:var(--muted); display:block; margin-top:8px; }
         .sizing { color:var(--green); font-weight:700; }
         .disclaimer { color: var(--muted); font-size: .74rem; text-align: center; margin-top: 30px; opacity: .8; }
         a { color: var(--blue); }
@@ -116,9 +124,18 @@
         <div class="track" id="track"></div>
 
         <div class="risk-box">
-            <span class="risk-label">💰 Risk manager</span>
-            <label>Account $ <input id="acct" type="number" min="0" step="10" placeholder="1000"></label>
-            <label>Risk % <input id="riskpct" type="number" min="0.1" max="10" step="0.1" placeholder="1"></label>
+            <div class="balance-row" id="balanceRow" style="display:none;">
+                <div class="balance-main">
+                    <span class="balance-label">💰 Live Balance</span>
+                    <span class="balance-amount" id="balanceAmount">—</span>
+                </div>
+                <span class="balance-delta" id="balanceDelta"></span>
+            </div>
+            <div class="risk-inputs">
+                <span class="risk-label">Set / reset balance:</span>
+                <label>Account $ <input id="acct" type="number" min="0" step="10" placeholder="1000"></label>
+                <label>Risk % <input id="riskpct" type="number" min="0.1" max="10" step="0.1" placeholder="1"></label>
+            </div>
             <span class="risk-note" id="riskNote">Set your account &amp; risk % — each trade will show exact lot size.</span>
         </div>
 
@@ -156,6 +173,9 @@
         const acctEl = document.getElementById('acct');
         const riskEl = document.getElementById('riskpct');
         const riskNote = document.getElementById('riskNote');
+        const balanceRow = document.getElementById('balanceRow');
+        const balanceAmount = document.getElementById('balanceAmount');
+        const balanceDelta = document.getElementById('balanceDelta');
 
         const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c =>
             ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c]));
@@ -163,16 +183,37 @@
         // ---- Risk manager: account $ + risk % -> exact lot size per trade ----
         // Persisted SERVER-SIDE (not just this browser) so the dashboard AND the
         // email alerts recommend the same lot size everywhere, on any device.
+        // "account" (the input) = your last-set reference balance. "liveEquity" =
+        // the actual COMPOUNDING balance the engine grows/shrinks as trades close
+        // — like a real trading account. The balance readout shows liveEquity;
+        // typing in the Account box resets both (a deliberate "set my balance").
+        let liveEquity = 0;
+        let startBalance = 0;
         acctEl.value = localStorage.getItem('acct') || '';
         riskEl.value = localStorage.getItem('riskpct') || '';
         function getRisk() {
-            return { account: parseFloat(acctEl.value) || 0, riskPct: parseFloat(riskEl.value) || 0 };
+            const account = parseFloat(acctEl.value) || 0;
+            return { account: liveEquity > 0 ? liveEquity : account, riskPct: parseFloat(riskEl.value) || 0 };
         }
         function updateRiskNote() {
             const { account, riskPct } = getRisk();
             riskNote.textContent = (account > 0 && riskPct > 0)
-                ? `Risking $${(account * riskPct / 100).toFixed(2)} per trade (${riskPct}% of $${account}). Saved — used in emails too.`
+                ? `Risking $${(account * riskPct / 100).toFixed(2)} per trade (${riskPct}% of your current balance). Saved — used in emails too.`
                 : 'Set your account & risk % — every signal, setup & email will show exact lot size.';
+        }
+        function renderBalance() {
+            if (!(liveEquity > 0)) { balanceRow.style.display = 'none'; return; }
+            balanceRow.style.display = '';
+            balanceAmount.textContent = '$' + liveEquity.toFixed(2);
+            balanceAmount.className = 'balance-amount' + (liveEquity > startBalance ? ' up' : liveEquity < startBalance ? ' down' : '');
+            if (startBalance > 0) {
+                const diff = liveEquity - startBalance;
+                const pct = (diff / startBalance) * 100;
+                balanceDelta.textContent = `${diff >= 0 ? '+' : ''}$${diff.toFixed(2)} (${diff >= 0 ? '+' : ''}${pct.toFixed(1)}%) since $${startBalance.toFixed(2)} start`;
+                balanceDelta.className = 'balance-delta ' + (diff >= 0 ? 'pos' : 'neg');
+            } else {
+                balanceDelta.textContent = '';
+            }
         }
         let riskSaveTimer = null;
         function onRiskChange() {
@@ -185,14 +226,22 @@
             riskSaveTimer = setTimeout(saveRiskToServer, 700);
         }
         async function saveRiskToServer() {
-            const { account, riskPct } = getRisk();
+            const account = parseFloat(acctEl.value) || 0;
+            const riskPct = parseFloat(riskEl.value) || 0;
             if (!account || !riskPct) return;
             try {
-                await fetch('/.netlify/functions/settings', {
+                const res = await fetch('/.netlify/functions/settings', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ account, riskPct }),
                 });
+                const s = await res.json();
+                if (s && s.equity != null) {
+                    liveEquity = Number(s.equity);
+                    startBalance = Number(s.account);
+                    renderBalance();
+                    load();
+                }
             } catch (e) { /* offline — localStorage still has it, will retry next edit */ }
         }
         async function loadRiskFromServer() {
@@ -204,9 +253,12 @@
                     riskEl.value = s.riskPct;
                     localStorage.setItem('acct', s.account);
                     localStorage.setItem('riskpct', s.riskPct);
+                    liveEquity = Number(s.equity) || Number(s.account);
+                    startBalance = Number(s.account);
                 }
             } catch (e) { /* use localStorage values already set */ }
             updateRiskNote();
+            renderBalance();
         }
         acctEl.addEventListener('input', onRiskChange);
         riskEl.addEventListener('input', onRiskChange);
@@ -214,6 +266,8 @@
         loadRiskFromServer().then(load); // server value wins once it arrives
 
         // Standard-lot forex position sizing for the majors (X/USD and USD/X).
+        // Sizes off the LIVE equity (via getRisk()), matching what the server /
+        // emails compute — so the dashboard and your inbox never disagree.
         function computePosition(entry, stop, pair) {
             const { account, riskPct } = getRisk();
             entry = parseFloat(entry); stop = parseFloat(stop);
@@ -343,8 +397,12 @@
                 : (o.lockedR > 0 || stage.indexOf('locked') >= 0) ? '<span class="tag warn">📈 ' + esc(stage) + '</span>'
                 : '';
             const peak = (o.peakR != null && o.peakR > 0) ? ' · peak +' + o.peakR + 'R' : '';
-            const pos = computePosition(o.entry, o.sl, o.pair);
-            const posTag = pos ? `<span class="sizing">📐 ${pos.lots.toFixed(2)} lots · $${pos.riskAmt.toFixed(0)} risk</span>` : '';
+            // Prefer the $ risk captured AT OPEN TIME (accurate to that trade); fall
+            // back to a live estimate if this trade predates risk tracking.
+            const pos = o.riskAmt != null
+                ? { lots: o.sizeLots || 0, riskAmt: o.riskAmt }
+                : computePosition(o.entry, o.sl, o.pair);
+            const posTag = pos ? `<span class="sizing">📐 ${pos.lots.toFixed(2)} lots · $${pos.riskAmt.toFixed(2)} risk</span>` : '';
             return `<div class="openrow">
                 <span class="dir ${esc(o.direction)}">${esc((o.direction||'').toUpperCase())}</span>
                 <span class="pr">${esc(o.pair)}</span>
@@ -366,11 +424,15 @@
             const dur = fmtDur(Date.parse(h.closedAt) - Date.parse(h.openedAt));
             const r = (h.rMultiple > 0 ? '+' : '') + (h.rMultiple ?? 0) + 'R';
             const rcls = h.rMultiple > 0 ? 'pos' : h.rMultiple < 0 ? 'neg' : '';
+            const pnl = h.pnlUsd != null
+                ? `<span class="r ${h.pnlUsd > 0 ? 'pos' : h.pnlUsd < 0 ? 'neg' : ''}">${h.pnlUsd >= 0 ? '+' : ''}$${h.pnlUsd.toFixed(2)}</span>`
+                : '';
             return `<div class="hist">
                 <span class="res ${cls}">${lbl}</span>
                 <span class="pr">${esc(h.pair)}</span>
                 <span class="small">${esc((h.direction||'').toUpperCase())} · ${how}</span>
                 <span class="r ${rcls}">${esc(r)}</span>
+                ${pnl}
                 <span class="small">lasted ${esc(dur)}</span>
                 <span class="small">closed ${esc(h.closedAt ? new Date(h.closedAt).toLocaleString() : '')}</span>
             </div>`;
@@ -382,6 +444,14 @@
                 if (!res.ok) throw new Error('not ready');
                 const data = await res.json();
                 renderTrack(data.stats);
+
+                // Sync live balance from the engine's freshest run (equity may have
+                // compounded from a trade closing since we last loaded the page).
+                if (data.riskSettings && data.riskSettings.equity != null) {
+                    liveEquity = Number(data.riskSettings.equity);
+                    startBalance = Number(data.riskSettings.account) || startBalance;
+                    renderBalance();
+                }
 
                 const all = data.signals || [];
                 const ok = all.filter(s => !s.error);

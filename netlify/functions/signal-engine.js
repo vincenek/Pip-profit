@@ -63,16 +63,21 @@ async function getRiskSettings(store) {
   try {
     const s = await store.get("settings", { type: "json" });
     if (s && Number(s.account) > 0 && Number(s.riskPct) > 0) {
-      return { account: Number(s.account), riskPct: Number(s.riskPct) };
+      // "account" = your last-set reference/starting balance. "equity" = the LIVE,
+      // compounding balance (starts equal to account, then grows/shrinks as trades
+      // close) — this is what actually drives position sizing, like a real account.
+      const equity = Number.isFinite(Number(s.equity)) && Number(s.equity) > 0 ? Number(s.equity) : Number(s.account);
+      return { account: Number(s.account), riskPct: Number(s.riskPct), equity };
     }
   } catch (e) { /* fall through to env defaults */ }
-  return { account: ACCOUNT_SIZE, riskPct: RISK_PCT };
+  return { account: ACCOUNT_SIZE, riskPct: RISK_PCT, equity: ACCOUNT_SIZE };
 }
 
-// Standard-lot position size for the majors (X/USD and USD/X). Returns null if
-// account/risk aren't configured.
+// Standard-lot position size for the majors (X/USD and USD/X). Sized off the
+// LIVE equity (compounding balance), not the static starting account number.
+// Returns null if account/risk aren't configured.
 function positionSize(entry, stop, pair, risk) {
-  const account = risk ? risk.account : ACCOUNT_SIZE;
+  const account = risk ? (risk.equity != null ? risk.equity : risk.account) : ACCOUNT_SIZE;
   const riskPct = risk ? risk.riskPct : RISK_PCT;
   if (!account || !riskPct || !entry || !stop) return null;
   const stopDist = Math.abs(entry - stop);
@@ -86,6 +91,21 @@ function positionSize(entry, stop, pair, risk) {
   return { riskAmt, lots, units: lots * contract, pips };
 }
 
+// Realize a closed trade's dollar P&L (using the $ risk captured AT OPEN TIME,
+// never recomputed later — a real account doesn't resize a position after entry)
+// and compound it into the live equity. No-op (returns unchanged) if the trade
+// was opened before risk tracking was configured (no riskAmt captured).
+function realizePnl(closedRec, riskState) {
+  if (closedRec.riskAmt == null || !Number.isFinite(closedRec.riskAmt)) return closedRec;
+  const pnlUsd = Number((closedRec.rMultiple * closedRec.riskAmt).toFixed(2));
+  closedRec.pnlUsd = pnlUsd;
+  if (riskState) {
+    const base = riskState.equity != null ? riskState.equity : riskState.account || 0;
+    riskState.equity = Number((base + pnlUsd).toFixed(2));
+  }
+  return closedRec;
+}
+
 exports.handler = async (event) => {
   if (!process.env.GROQ_API_KEY && !process.env.GEMINI_API_KEY) {
     console.error("signal-engine: no AI key set (GROQ_API_KEY or GEMINI_API_KEY)");
@@ -97,6 +117,10 @@ exports.handler = async (event) => {
 
   const store = getStore("signals");
   const riskSettings = await getRiskSettings(store); // account $ + risk % (dashboard-set or env fallback)
+  // Mutable copy — trades closing DURING this run compound into riskState.equity
+  // live (e.g. pair A's win funds pair B's position size later in the same run,
+  // just like a real account). Persisted back to Blobs at the end of the run.
+  const riskState = { ...riskSettings };
 
   // Economic calendar once for the whole run.
   const calendar = await getCalendar().catch((e) => {
@@ -142,8 +166,8 @@ exports.handler = async (event) => {
       const isFocus = focusSet.has(pair);
       try {
         const snapshot = await buildSnapshot(pair, calendar);
-        evaluateOpenSignals(pair, snapshot, ledger, justClosed, manageAlerts);
-        checkPending(pair, snapshot, ledger, justEntered, cancelledSetups);
+        evaluateOpenSignals(pair, snapshot, ledger, justClosed, manageAlerts, riskState);
+        checkPending(pair, snapshot, ledger, justEntered, cancelledSetups, riskState);
         return { pair, snapshot, isFocus };
       } catch (err) {
         console.error(`${pair} data failed:`, err);
@@ -181,11 +205,11 @@ exports.handler = async (event) => {
       const price = priceByPair[o.pair];
       if (rv && rv.verdict === "close" && price) {
         const r = currentR(o, price);
-        const closedRec = {
+        const closedRec = realizePnl({
           ...o, closedAt: new Date().toISOString(),
           outcome: r > 0.01 ? "win" : r < -0.01 ? "loss" : "scratch",
           rMultiple: Number(r.toFixed(2)), exit: "ai-close", exitReason: rv.reason, exitPrice: price,
-        };
+        }, riskState);
         ledger.closed.unshift(closedRec);
         justClosed.push(closedRec);
         manageAlerts.push({ type: "close", pair: o.pair, direction: o.direction, entry: o.entry, reason: `AI review: ${rv.reason}`, rNow: r });
@@ -274,11 +298,21 @@ exports.handler = async (event) => {
   recomputeStats(ledger);
 
   // Notifications first (dedup keys recorded on the ledger), THEN persist.
+  // Use riskState (post-run) so alerts after a close this run show fresh equity.
   await dispatchAlerts(
     { entered: justEntered, pending: justPending, cancelled: cancelledSetups, closed: justClosed, manage: manageAlerts },
     ledger,
-    riskSettings
+    riskState
   );
+
+  // Persist the compounded equity so the NEXT run (and the dashboard) picks up
+  // where this one left off — only if risk tracking is actually configured.
+  if (riskState.account > 0 && riskState.riskPct > 0 && riskState.equity !== riskSettings.equity) {
+    await store.setJSON("settings", {
+      account: riskState.account, riskPct: riskState.riskPct, equity: riskState.equity,
+      updatedAt: new Date().toISOString(),
+    }).catch((e) => console.warn("failed to persist equity:", String(e)));
+  }
 
   await store.setJSON("ledger", ledger);
   await store.setJSON("latest", {
@@ -289,7 +323,7 @@ exports.handler = async (event) => {
     open: ledger.open,              // currently tracked trades (for duration)
     pending: ledger.pending,        // setups waiting for a pullback entry
     history: ledger.closed, // ALL resolved trades — nothing hidden
-    riskSettings,                   // the account $/risk % currently driving position sizing
+    riskSettings: riskState,        // account $ / risk % / LIVE equity driving position sizing
   });
 
   console.log(
@@ -728,7 +762,7 @@ function trackNewSignal(record, snapshot, ledger) {
   return true;
 }
 
-function evaluateOpenSignals(pair, snapshot, ledger, justClosed, manageAlerts) {
+function evaluateOpenSignals(pair, snapshot, ledger, justClosed, manageAlerts, riskState) {
   const raw = snapshot._h1raw;
   const still = [];
   for (const o of ledger.open) {
@@ -738,7 +772,7 @@ function evaluateOpenSignals(pair, snapshot, ledger, justClosed, manageAlerts) {
     //    behind each milestone after). Returns a close, or updates live state.
     const graded = raw && raw.datetimes ? gradeWithTrailing(o, raw) : { closed: false };
     if (graded.closed) {
-      const closedRec = { ...o, ...graded, closedAt: new Date().toISOString() };
+      const closedRec = realizePnl({ ...o, ...graded, closedAt: new Date().toISOString() }, riskState);
       ledger.closed.unshift(closedRec);
       if (justClosed) justClosed.push(closedRec);
       continue;
@@ -749,12 +783,12 @@ function evaluateOpenSignals(pair, snapshot, ledger, justClosed, manageAlerts) {
     if (action && action.type === "close") {
       // CUT EARLY: thesis broke — close now at current price (don't wait for stop).
       const r = currentR(o, snapshot.price);
-      const closedRec = {
+      const closedRec = realizePnl({
         ...o, closedAt: new Date().toISOString(),
         outcome: r > 0.01 ? "win" : r < -0.01 ? "loss" : "scratch",
         rMultiple: Number(r.toFixed(2)), exit: "managed-close", exitReason: action.reason,
         exitPrice: snapshot.price,
-      };
+      }, riskState);
       ledger.closed.unshift(closedRec);
       if (justClosed) justClosed.push(closedRec);
       if (manageAlerts) manageAlerts.push({ ...action, pair: o.pair, direction: o.direction, entry: o.entry });
@@ -1008,7 +1042,7 @@ function createPending(record, snapshot, ledger) {
 
 // Per run: trigger pendings whose pullback level was reached → open the trade;
 // expire ones that never pulled back. Returns via the accumulators.
-function checkPending(pair, snapshot, ledger, justEntered, cancelled) {
+function checkPending(pair, snapshot, ledger, justEntered, cancelled, riskState) {
   ledger.pending = ledger.pending || [];
   const raw = snapshot._h1raw;
   const keep = [];
@@ -1031,6 +1065,9 @@ function checkPending(pair, snapshot, ledger, justEntered, cancelled) {
     if (triggerTs != null) {
       // ENTER: open the trade at the pullback level, sized from that entry.
       const lv = computeLevels(p.entryZone, buy, snapshot);
+      // Lock in the $ size NOW, off the current live equity — a real account
+      // doesn't resize a position after it's opened, so this never changes again.
+      const ps = positionSize(lv.entry, lv.sl, pair, riskState);
       const o = {
         id: `${keyFor(pair)}-${Date.now()}`,
         pair, direction: p.direction,
@@ -1039,6 +1076,9 @@ function checkPending(pair, snapshot, ledger, justEntered, cancelled) {
         openedAt: new Date(triggerTs).toISOString(), openedTs: triggerTs,
         peakR: 0, lockedR: -1, currentStop: lv.sl, stage: "initial", alertedLockedR: -1,
         viaPullback: true,
+        riskAmt: ps ? ps.riskAmt : null,
+        sizeLots: ps ? ps.lots : null,
+        equityAtOpen: riskState ? riskState.equity : null,
       };
       ledger.open.push(o);
       if (justEntered) justEntered.push(o);
