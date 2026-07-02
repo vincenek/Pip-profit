@@ -328,14 +328,17 @@ exports.handler = async (event) => {
 
   await store.setJSON("ledger", ledger);
   await store.setJSON("latest", {
+    // Small, high-value fields FIRST, the potentially-huge `history` array LAST —
+    // history keeps growing (every trade, nothing hidden, per design) and large
+    // JSON bodies are where things after it risk getting lost in transit/tooling.
     generatedAt: new Date().toISOString(),
-    signals,
+    riskSettings: riskState,        // account $ / risk % / LIVE equity driving position sizing
     stats: ledger.stats,
     calibration: ledger.stats, // historical hit-rate the dashboard surfaces
     open: ledger.open,              // currently tracked trades (for duration)
     pending: ledger.pending,        // setups waiting for a pullback entry
-    history: ledger.closed, // ALL resolved trades — nothing hidden
-    riskSettings: riskState,        // account $ / risk % / LIVE equity driving position sizing
+    signals,
+    history: ledger.closed, // ALL resolved trades — nothing hidden — LAST
   });
 
   console.log(
