@@ -44,10 +44,12 @@ const PAIRS = (process.env.SIGNAL_PAIRS || "EUR/USD,GBP/USD,USD/JPY")
   .split(",")
   .map((p) => p.trim().toUpperCase())
   .filter(Boolean);
-// 8b-instant has a much larger free DAILY TOKEN budget (~500k vs ~100k for 70b)
-// and is fast — the engine's math does the heavy analysis, the AI just synthesises.
-// Set GROQ_MODEL=llama-3.3-70b-versatile for max reasoning (lower daily token cap).
-const GROQ_MODEL = process.env.GROQ_MODEL || "llama-3.1-8b-instant";
+// 70b-versatile: meaningfully smarter reasoning than 8b-instant, still free —
+// but its DAILY token budget (~100k) is much smaller than 8b's (~500k). At the
+// current compact-prompt + 3-pair + 30-min schedule this should fit; if it
+// starts 429ing on the daily cap, either widen the schedule (netlify.toml) or
+// fall back to GROQ_MODEL=llama-3.1-8b-instant via env var.
+const GROQ_MODEL = process.env.GROQ_MODEL || "llama-3.3-70b-versatile";
 const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-2.0-flash";
 const TD_KEY = process.env.TWELVEDATA_API_KEY;
 const NEWS_WINDOW_MIN = Number(process.env.NEWS_WINDOW_MIN || 60);
