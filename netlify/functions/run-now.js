@@ -95,6 +95,9 @@ exports.handler = async (event) => {
       const removedPending = ledger.pending.filter(wasWeekendPending);
 
       const dryRun = qs.dryRun === "1" || qs.dryRun === "true";
+      // Keep the response payload SMALL and bounded (max 12 examples) — a large
+      // JSON body gets corrupted/summarized unreliably by some read-back tools,
+      // regardless of what's asked for. Counts are the trustworthy source of truth.
       const summary = {
         cleanupWeekend: true,
         dryRun,
@@ -103,7 +106,7 @@ exports.handler = async (event) => {
           open: removedOpen.length,
           pending: removedPending.length,
         },
-        removedTrades: [...removedClosed, ...removedOpen].map((t) => ({
+        removedTradesSample: [...removedClosed, ...removedOpen].slice(0, 12).map((t) => ({
           pair: t.pair, direction: t.direction, openedAt: t.openedAt, outcome: t.outcome || "was open",
         })),
         remaining: {
