@@ -1513,6 +1513,10 @@ async function sendEmail(subject, text) {
 }
 
 // Exposed so run-now?test=1 can verify each notification channel directly.
+// Exposed for one-off maintenance tools (e.g. run-now?cleanupWeekend=1).
+exports.forexMarketOpen = forexMarketOpen;
+exports.recomputeStats = recomputeStats;
+
 exports.testAlert = async () => {
   const text = "✅ FX Signal Desk test — your alerts are working.";
   return {

@@ -37,6 +37,69 @@ exports.handler = async (event) => {
     }
   }
 
+  // ?cleanupWeekend=1 → remove ONLY trades opened while forex was closed
+  // (weekend). Every real weekday trade is left untouched. Add &dryRun=1 to
+  // preview what would be removed without saving anything.
+  if (qs && (qs.cleanupWeekend === "1" || qs.cleanupWeekend === "true")) {
+    try {
+      const store = getStore("signals");
+      const ledger = (await store.get("ledger", { type: "json" })) || { open: [], closed: [], pending: [] };
+      ledger.pending = ledger.pending || [];
+
+      const wasWeekend = (t) => {
+        const ts = t.openedTs != null ? t.openedTs : Date.parse(t.openedAt);
+        return Number.isFinite(ts) && !engine.forexMarketOpen(new Date(ts));
+      };
+      const wasWeekendPending = (p) => {
+        const ts = p.createdTs != null ? p.createdTs : Date.parse(p.createdAt);
+        return Number.isFinite(ts) && !engine.forexMarketOpen(new Date(ts));
+      };
+
+      const removedClosed = ledger.closed.filter(wasWeekend);
+      const removedOpen = ledger.open.filter(wasWeekend);
+      const removedPending = ledger.pending.filter(wasWeekendPending);
+
+      const dryRun = qs.dryRun === "1" || qs.dryRun === "true";
+      const summary = {
+        cleanupWeekend: true,
+        dryRun,
+        removed: {
+          closed: removedClosed.length,
+          open: removedOpen.length,
+          pending: removedPending.length,
+        },
+        removedTrades: [...removedClosed, ...removedOpen].map((t) => ({
+          pair: t.pair, direction: t.direction, openedAt: t.openedAt, outcome: t.outcome || "was open",
+        })),
+        remaining: {
+          closed: ledger.closed.length - removedClosed.length,
+          open: ledger.open.length - removedOpen.length,
+        },
+      };
+
+      if (!dryRun) {
+        ledger.closed = ledger.closed.filter((t) => !wasWeekend(t));
+        ledger.open = ledger.open.filter((t) => !wasWeekend(t));
+        ledger.pending = ledger.pending.filter((p) => !wasWeekendPending(p));
+        engine.recomputeStats(ledger);
+        await store.setJSON("ledger", ledger);
+
+        // Keep "latest" (what the dashboard reads) in sync.
+        const latest = (await store.get("latest", { type: "json" })) || {};
+        latest.stats = ledger.stats;
+        latest.open = ledger.open;
+        latest.pending = ledger.pending;
+        latest.history = ledger.closed;
+        await store.setJSON("latest", latest);
+        summary.newStats = ledger.stats;
+      }
+
+      return { statusCode: 200, headers, body: JSON.stringify(summary, null, 2) };
+    } catch (err) {
+      return { statusCode: 500, headers, body: JSON.stringify({ error: String(err) }, null, 2) };
+    }
+  }
+
   // ?test=1 → just verify notification channels (no engine run, no quota used).
   if (qs && (qs.test === "1" || qs.test === "true")) {
     try {
