@@ -58,6 +58,11 @@ const NOTIFY_MIN_SCORE = Number(process.env.NOTIFY_MIN_SCORE || 65);
 // system (dashboard AND emails) uses everywhere, not just a local display.
 const ACCOUNT_SIZE = Number(process.env.ACCOUNT_SIZE || 0);
 const RISK_PCT = Number(process.env.RISK_PCT || 0);
+// Built-in fallback so sizing/balance tracking is never just blank before you
+// configure your real numbers — clearly flagged (isDefault) so the dashboard
+// and emails can label it as an example, not your actual account.
+const DEFAULT_ACCOUNT = 1000;
+const DEFAULT_RISK_PCT = 1;
 
 async function getRiskSettings(store) {
   try {
@@ -69,8 +74,13 @@ async function getRiskSettings(store) {
       const equity = Number.isFinite(Number(s.equity)) && Number(s.equity) > 0 ? Number(s.equity) : Number(s.account);
       return { account: Number(s.account), riskPct: Number(s.riskPct), equity };
     }
-  } catch (e) { /* fall through to env defaults */ }
-  return { account: ACCOUNT_SIZE, riskPct: RISK_PCT, equity: ACCOUNT_SIZE };
+  } catch (e) { /* fall through to defaults below */ }
+  if (ACCOUNT_SIZE > 0 && RISK_PCT > 0) {
+    return { account: ACCOUNT_SIZE, riskPct: RISK_PCT, equity: ACCOUNT_SIZE };
+  }
+  // Nothing configured anywhere (no saved settings, no env vars) — use a
+  // labeled example so sizing always shows something, not blank.
+  return { account: DEFAULT_ACCOUNT, riskPct: DEFAULT_RISK_PCT, equity: DEFAULT_ACCOUNT, isDefault: true };
 }
 
 // Standard-lot position size for the majors (X/USD and USD/X). Sized off the
@@ -306,8 +316,10 @@ exports.handler = async (event) => {
   );
 
   // Persist the compounded equity so the NEXT run (and the dashboard) picks up
-  // where this one left off — only if risk tracking is actually configured.
-  if (riskState.account > 0 && riskState.riskPct > 0 && riskState.equity !== riskSettings.equity) {
+  // where this one left off — only if risk tracking is actually configured (not
+  // the unlabeled fallback default — that stays a pure example, never saved,
+  // until you set your own numbers on the dashboard).
+  if (!riskSettings.isDefault && riskState.account > 0 && riskState.riskPct > 0 && riskState.equity !== riskSettings.equity) {
     await store.setJSON("settings", {
       account: riskState.account, riskPct: riskState.riskPct, equity: riskState.equity,
       updatedAt: new Date().toISOString(),

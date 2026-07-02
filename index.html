@@ -126,7 +126,7 @@
         <div class="risk-box">
             <div class="balance-row" id="balanceRow" style="display:none;">
                 <div class="balance-main">
-                    <span class="balance-label">💰 Live Balance</span>
+                    <span class="balance-label" id="balanceLabel">💰 Live Balance</span>
                     <span class="balance-amount" id="balanceAmount">—</span>
                 </div>
                 <span class="balance-delta" id="balanceDelta"></span>
@@ -174,8 +174,11 @@
         const riskEl = document.getElementById('riskpct');
         const riskNote = document.getElementById('riskNote');
         const balanceRow = document.getElementById('balanceRow');
+        const balanceLabel = document.getElementById('balanceLabel');
         const balanceAmount = document.getElementById('balanceAmount');
         const balanceDelta = document.getElementById('balanceDelta');
+        let usingDefaultBalance = false; // showing the built-in $1000@1% example, not your real numbers
+        let liveRiskPct = 0; // risk% backing the default/synced equity, used when the input is blank
 
         const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c =>
             ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c]));
@@ -193,20 +196,32 @@
         riskEl.value = localStorage.getItem('riskpct') || '';
         function getRisk() {
             const account = parseFloat(acctEl.value) || 0;
-            return { account: liveEquity > 0 ? liveEquity : account, riskPct: parseFloat(riskEl.value) || 0 };
+            return {
+                account: liveEquity > 0 ? liveEquity : account,
+                riskPct: parseFloat(riskEl.value) || liveRiskPct || 0,
+            };
         }
         function updateRiskNote() {
             const { account, riskPct } = getRisk();
-            riskNote.textContent = (account > 0 && riskPct > 0)
-                ? `Risking $${(account * riskPct / 100).toFixed(2)} per trade (${riskPct}% of your current balance). Saved — used in emails too.`
-                : 'Set your account & risk % — every signal, setup & email will show exact lot size.';
+            if (account > 0 && riskPct > 0 && usingDefaultBalance) {
+                riskNote.textContent = `Showing an example: risking $${(account * riskPct / 100).toFixed(2)} per trade ` +
+                    `(${riskPct}% of $${account}). Set your real account below to make this yours.`;
+            } else if (account > 0 && riskPct > 0) {
+                riskNote.textContent = `Risking $${(account * riskPct / 100).toFixed(2)} per trade (${riskPct}% of your current balance). Saved — used in emails too.`;
+            } else {
+                riskNote.textContent = 'Set your account & risk % — every signal, setup & email will show exact lot size.';
+            }
         }
         function renderBalance() {
             if (!(liveEquity > 0)) { balanceRow.style.display = 'none'; return; }
             balanceRow.style.display = '';
+            balanceLabel.textContent = usingDefaultBalance ? '💰 Example Balance' : '💰 Live Balance';
             balanceAmount.textContent = '$' + liveEquity.toFixed(2);
-            balanceAmount.className = 'balance-amount' + (liveEquity > startBalance ? ' up' : liveEquity < startBalance ? ' down' : '');
-            if (startBalance > 0) {
+            balanceAmount.className = 'balance-amount' + (usingDefaultBalance ? '' : liveEquity > startBalance ? ' up' : liveEquity < startBalance ? ' down' : '');
+            if (usingDefaultBalance) {
+                balanceDelta.textContent = 'Not your real account — set yours below to start tracking for real.';
+                balanceDelta.className = 'balance-delta';
+            } else if (startBalance > 0) {
                 const diff = liveEquity - startBalance;
                 const pct = (diff / startBalance) * 100;
                 balanceDelta.textContent = `${diff >= 0 ? '+' : ''}$${diff.toFixed(2)} (${diff >= 0 ? '+' : ''}${pct.toFixed(1)}%) since $${startBalance.toFixed(2)} start`;
@@ -237,6 +252,7 @@
                 });
                 const s = await res.json();
                 if (s && s.equity != null) {
+                    usingDefaultBalance = false; // a real manual save is never the placeholder
                     liveEquity = Number(s.equity);
                     startBalance = Number(s.account);
                     renderBalance();
@@ -448,9 +464,12 @@
                 // Sync live balance from the engine's freshest run (equity may have
                 // compounded from a trade closing since we last loaded the page).
                 if (data.riskSettings && data.riskSettings.equity != null) {
+                    usingDefaultBalance = !!data.riskSettings.isDefault;
                     liveEquity = Number(data.riskSettings.equity);
+                    liveRiskPct = Number(data.riskSettings.riskPct) || liveRiskPct;
                     startBalance = Number(data.riskSettings.account) || startBalance;
                     renderBalance();
+                    updateRiskNote();
                 }
 
                 const all = data.signals || [];
