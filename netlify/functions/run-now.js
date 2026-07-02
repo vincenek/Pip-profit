@@ -37,6 +37,41 @@ exports.handler = async (event) => {
     }
   }
 
+  // ?debugTimes=1 → ground-truth comparison of openedAt vs openedTs vs a fresh
+  // re-parse of openedAt, for every closed+open trade. Used to diagnose whether
+  // openedTs is stale/inconsistent (from older code versions) before trusting it
+  // for anything destructive like the weekend cleanup below.
+  if (qs && (qs.debugTimes === "1" || qs.debugTimes === "true")) {
+    try {
+      const store = getStore("signals");
+      const ledger = (await store.get("ledger", { type: "json" })) || { open: [], closed: [] };
+      const all = [...(ledger.closed || []), ...(ledger.open || [])];
+      const rows = all.map((t) => {
+        const freshTs = Date.parse(t.openedAt);
+        const mismatch = t.openedTs != null && Math.abs(t.openedTs - freshTs) > 1000;
+        return {
+          pair: t.pair,
+          openedAt: t.openedAt,
+          openedTs: t.openedTs,
+          freshParseOfOpenedAt: freshTs,
+          diffMs: t.openedTs != null ? t.openedTs - freshTs : null,
+          mismatch,
+          dayFromOpenedTs: t.openedTs != null ? new Date(t.openedTs).getUTCDay() : null,
+          dayFromOpenedAt: new Date(freshTs).getUTCDay(),
+          marketOpenByOpenedTs: t.openedTs != null ? engine.forexMarketOpen(new Date(t.openedTs)) : null,
+          marketOpenByOpenedAt: engine.forexMarketOpen(new Date(freshTs)),
+        };
+      });
+      const mismatches = rows.filter((r) => r.mismatch);
+      return {
+        statusCode: 200, headers,
+        body: JSON.stringify({ totalTrades: all.length, mismatchCount: mismatches.length, mismatches: mismatches.slice(0, 30), sample: rows.slice(0, 5) }, null, 2),
+      };
+    } catch (err) {
+      return { statusCode: 500, headers, body: JSON.stringify({ error: String(err) }, null, 2) };
+    }
+  }
+
   // ?cleanupWeekend=1 → remove ONLY trades opened while forex was closed
   // (weekend). Every real weekday trade is left untouched. Add &dryRun=1 to
   // preview what would be removed without saving anything.
