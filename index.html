@@ -179,6 +179,12 @@
         const balanceDelta = document.getElementById('balanceDelta');
         let usingDefaultBalance = false; // showing the built-in $1000@1% example, not your real numbers
         let liveRiskPct = 0; // risk% backing the default/synced equity, used when the input is blank
+        // Once the user has REAL saved settings, they are the authority: the stale
+        // engine-run snapshot (latest.riskSettings) must never clobber them. That
+        // snapshot is only a fallback for the never-configured (example) state.
+        let hasRealSettings = false;
+        const riskInputFocused = () =>
+            document.activeElement === acctEl || document.activeElement === riskEl;
 
         const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c =>
             ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c]));
@@ -252,24 +258,32 @@
                 });
                 const s = await res.json();
                 if (s && s.equity != null) {
+                    hasRealSettings = true;
                     usingDefaultBalance = false; // a real manual save is never the placeholder
                     liveEquity = Number(s.equity);
+                    liveRiskPct = Number(s.riskPct) || liveRiskPct;
                     startBalance = Number(s.account);
                     renderBalance();
+                    updateRiskNote();
                     load();
                 }
             } catch (e) { /* offline — localStorage still has it, will retry next edit */ }
         }
         async function loadRiskFromServer() {
             try {
-                const res = await fetch('/.netlify/functions/settings');
+                const res = await fetch('/.netlify/functions/settings', { cache: 'no-store' });
                 const s = await res.json();
                 if (s && s.account > 0 && s.riskPct > 0) {
-                    acctEl.value = s.account;
-                    riskEl.value = s.riskPct;
+                    hasRealSettings = true;
+                    usingDefaultBalance = false;
+                    if (!riskInputFocused()) { // never clobber inputs mid-typing
+                        acctEl.value = s.account;
+                        riskEl.value = s.riskPct;
+                    }
                     localStorage.setItem('acct', s.account);
                     localStorage.setItem('riskpct', s.riskPct);
                     liveEquity = Number(s.equity) || Number(s.account);
+                    liveRiskPct = Number(s.riskPct) || liveRiskPct;
                     startBalance = Number(s.account);
                 }
             } catch (e) { /* use localStorage values already set */ }
@@ -461,9 +475,13 @@
                 const data = await res.json();
                 renderTrack(data.stats);
 
-                // Sync live balance from the engine's freshest run (equity may have
-                // compounded from a trade closing since we last loaded the page).
-                if (data.riskSettings && data.riskSettings.equity != null) {
+                // Balance sync: the engine-run snapshot is ONLY a fallback for the
+                // never-configured (example) state. Once you have real saved
+                // settings, /settings is the authority (polled on the interval) —
+                // this stale snapshot must never overwrite your numbers. That was
+                // the bug where a saved $10 kept flipping back to the $1000 example.
+                if (!hasRealSettings && !riskInputFocused() &&
+                    data.riskSettings && data.riskSettings.equity != null) {
                     usingDefaultBalance = !!data.riskSettings.isDefault;
                     liveEquity = Number(data.riskSettings.equity);
                     liveRiskPct = Number(data.riskSettings.riskPct) || liveRiskPct;
@@ -520,7 +538,13 @@
         });
 
         load();
-        setInterval(load, 60000);
+        setInterval(() => {
+            // /settings is the authoritative live balance (the engine writes your
+            // compounded equity there when trades close) — poll it alongside the
+            // signals so the header balance ticks in near-real-time.
+            if (hasRealSettings) loadRiskFromServer();
+            load();
+        }, 60000);
     </script>
 </body>
 </html>
