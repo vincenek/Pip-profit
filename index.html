@@ -99,6 +99,12 @@
         .risk-box input { width:90px; margin-left:6px; background:var(--panel2); border:1px solid var(--line); color:var(--text); border-radius:8px; padding:6px 8px; font:inherit; }
         .risk-box .risk-note { font-size:.78rem; color:var(--muted); display:block; margin-top:8px; }
         .sizing { color:var(--green); font-weight:700; }
+        .dd-banner { background:#3a0d0d; border:1px solid var(--red); color:#fecaca; border-radius:12px; padding:12px 16px; margin-bottom:14px; font-weight:600; }
+        .dd-banner.warn { background:#3a2a07; border-color:#5c4310; color:#fde68a; }
+        .bt-table { width:100%; border-collapse:collapse; font-size:.8rem; }
+        .bt-table th, .bt-table td { padding:6px 8px; text-align:right; border-bottom:1px solid var(--line); }
+        .bt-table th:first-child, .bt-table td:first-child { text-align:left; }
+        .bt-table th { color:var(--muted); font-weight:600; text-transform:uppercase; font-size:.68rem; letter-spacing:.05em; }
         .disclaimer { color: var(--muted); font-size: .74rem; text-align: center; margin-top: 30px; opacity: .8; }
         a { color: var(--blue); }
     </style>
@@ -122,6 +128,8 @@
         </div>
 
         <div class="track" id="track"></div>
+
+        <div id="ddBanner" style="display:none;"></div>
 
         <div class="risk-box">
             <div class="balance-row" id="balanceRow" style="display:none;">
@@ -152,6 +160,17 @@
 
         <h2 class="sec-title" id="histTitle" style="display:none;">Recent results — which hit TP vs SL</h2>
         <div id="histList"></div>
+
+        <h2 class="sec-title">🧪 Backtest — the strategy replayed over history (with spread costs)</h2>
+        <div class="risk-box">
+            <div class="risk-inputs">
+                <button id="btBtn">Run backtest</button>
+                <span class="risk-note">Replays the exact live strategy over ~5 months of hourly data per pair,
+                charging realistic spread on every trade. In-sample vs out-of-sample split shows if the edge holds
+                on unseen data. (Takes ~10s.)</span>
+            </div>
+            <div id="btResults" style="margin-top:10px;"></div>
+        </div>
 
         <p class="disclaimer">
             Technical research for personal use — not financial advice. Signals are generated,
@@ -362,6 +381,7 @@
             if (snap.regime) tags.push(`<span class="tag">${esc(snap.regime)}</span>`);
             if (snap.session && snap.session.open) tags.push(`<span class="tag">${esc(snap.session.open)}${snap.session.active ? '' : ' · thin'}</span>`);
             if (snap.newsBlackout) tags.push('<span class="tag warn">⚠ news window</span>');
+            if (s.risk_block) tags.push(`<span class="tag warn">🛡 not taken — ${esc(s.risk_block)}</span>`);
             if (s.risk_reward) tags.push(`<span class="tag">R:R ${esc(s.risk_reward)}</span>`);
             tags.push(`<span class="tag">conviction ${conf}%</span>`);
             const scoreColor = score >= 75 ? 'var(--green)' : score >= 60 ? 'var(--blue)' : score > 0 ? 'var(--amber)' : 'var(--muted)';
@@ -475,6 +495,19 @@
                 const data = await res.json();
                 renderTrack(data.stats);
 
+                // Drawdown circuit-breaker banner.
+                const ddB = document.getElementById('ddBanner');
+                if (data.drawdown && (data.drawdown.paused || data.drawdown.warned)) {
+                    const pct = (data.drawdown.dd * 100).toFixed(1);
+                    ddB.style.display = '';
+                    ddB.className = 'dd-banner' + (data.drawdown.paused ? '' : ' warn');
+                    ddB.textContent = data.drawdown.paused
+                        ? `🛑 Drawdown circuit-breaker ACTIVE (−${pct}%) — new trades paused until equity recovers. Open trades still managed.`
+                        : `⚠️ Drawdown warning: equity −${pct}% from start. Breaker pauses new trades at −20%.`;
+                } else if (ddB) {
+                    ddB.style.display = 'none';
+                }
+
                 // Balance sync: the engine-run snapshot is ONLY a fallback for the
                 // never-configured (example) state. Once you have real saved
                 // settings, /settings is the authority (polled on the interval) —
@@ -534,6 +567,38 @@
                 grid.innerHTML = `<div class="card err"><b>Run failed:</b><div class="reason" style="color:var(--amber);margin-top:8px;">${esc(String(e))}</div></div>`;
             } finally {
                 runBtn.disabled = false;
+            }
+        });
+
+        // ---- Backtest runner ----
+        const btBtn = document.getElementById('btBtn');
+        const btResults = document.getElementById('btResults');
+        function btRow(pair, label, m) {
+            return `<tr><td>${esc(pair)} · ${esc(label)}</td><td>${m.trades}</td><td>${m.winRate}%</td>` +
+                `<td class="${m.expectancyR > 0 ? 'pos' : m.expectancyR < 0 ? 'neg' : ''}">${m.expectancyR > 0 ? '+' : ''}${m.expectancyR}R</td>` +
+                `<td>${m.profitFactor}</td><td>${m.maxDrawdownR}R</td><td>${m.maxConsecutiveLosses}</td></tr>`;
+        }
+        btBtn.addEventListener('click', async () => {
+            btBtn.disabled = true;
+            btResults.innerHTML = '<span class="risk-note">Running — replaying the strategy over months of data…</span>';
+            try {
+                const res = await fetch('/.netlify/functions/backtest', { cache: 'no-store' });
+                const data = await res.json();
+                let rows = '';
+                for (const [pair, r] of Object.entries(data.results || {})) {
+                    if (r.error || r.skipped) {
+                        rows += `<tr><td>${esc(pair)}</td><td colspan="6">${esc(r.error || r.skipped)}</td></tr>`;
+                        continue;
+                    }
+                    rows += btRow(pair, 'all', r.all) + btRow(pair, 'in-sample', r.inSample) + btRow(pair, 'OUT-of-sample', r.outOfSample);
+                }
+                btResults.innerHTML =
+                    `<table class="bt-table"><tr><th>pair · window</th><th>trades</th><th>win%</th><th>expectancy</th><th>PF</th><th>max DD</th><th>loss streak</th></tr>${rows}</table>` +
+                    `<div class="risk-note" style="margin-top:8px;">${esc(data.method || '')}</div>`;
+            } catch (e) {
+                btResults.innerHTML = '<span class="risk-note">Backtest failed — try one pair at a time via ?pair=EUR/USD on the endpoint.</span>';
+            } finally {
+                btBtn.disabled = false;
             }
         });
 

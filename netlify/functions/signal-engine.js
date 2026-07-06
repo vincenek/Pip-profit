@@ -55,6 +55,53 @@ const TD_KEY = process.env.TWELVEDATA_API_KEY;
 const NEWS_WINDOW_MIN = Number(process.env.NEWS_WINDOW_MIN || 60);
 // Only alert (and surface as high-conviction) signals at/above this quality score.
 const NOTIFY_MIN_SCORE = Number(process.env.NOTIFY_MIN_SCORE || 65);
+
+// HONEST COSTS: typical retail round-trip spread per pair (price units). Every
+// simulated trade pays this at close — perfect-price fills overstate the edge.
+const SPREADS = {
+  "EUR/USD": 0.00007, "GBP/USD": 0.00010, "USD/JPY": 0.010,
+  "AUD/USD": 0.00009, "USD/CAD": 0.00012, "USD/CHF": 0.00012, "NZD/USD": 0.00012,
+};
+function spreadRFor(o) {
+  const spread = SPREADS[o.pair] != null ? SPREADS[o.pair] : (o.entry || 1) * 0.0001;
+  const risk = Math.abs(o.entry - o.sl) || 1e-9;
+  return spread / risk; // cost expressed in R (typically ~0.02-0.05R)
+}
+
+// PORTFOLIO RISK (institutional guards):
+const MAX_OPEN_TRADES = Number(process.env.MAX_OPEN_TRADES || 3);      // total concurrent positions
+const MAX_SAME_SIDE_USD = Number(process.env.MAX_SAME_SIDE_USD || 2);  // same-direction USD exposure cap
+const DD_WARN = Number(process.env.DD_WARN || 0.10);   // -10% equity -> email warning
+const DD_PAUSE = Number(process.env.DD_PAUSE || 0.20); // -20% equity -> pause new trades
+const DD_RESUME = Number(process.env.DD_RESUME || 0.15); // resume below -15% (hysteresis)
+
+// Which way a position leans on USD: +1 long USD, -1 short USD, 0 no USD leg.
+function usdSide(pair, direction) {
+  const [base, quote] = pair.split("/");
+  const buy = direction === "buy";
+  if (base === "USD") return buy ? 1 : -1;
+  if (quote === "USD") return buy ? -1 : 1;
+  return 0;
+}
+
+// Pre-trade portfolio checks. Returns a human-readable block reason, or null.
+function portfolioBlock(record, ledger) {
+  if (ledger.ddState && ledger.ddState.paused) {
+    return "drawdown circuit-breaker active — new trades paused until equity recovers";
+  }
+  if (ledger.open.length >= MAX_OPEN_TRADES) {
+    return `max ${MAX_OPEN_TRADES} concurrent positions reached`;
+  }
+  const side = usdSide(record.pair, record.direction);
+  if (side !== 0) {
+    const same = [...ledger.open, ...(ledger.pending || [])]
+      .filter((x) => usdSide(x.pair, x.direction) === side).length;
+    if (same >= MAX_SAME_SIDE_USD) {
+      return `USD correlation guard: already ${same} position${same === 1 ? "" : "s"} ${side > 0 ? "long" : "short"} USD — this would stack the same bet`;
+    }
+  }
+  return null;
+}
 // Fallback risk config (env vars) — overridden by the persisted /settings the
 // dashboard writes to, so the account $ you type in the app is what the whole
 // system (dashboard AND emails) uses everywhere, not just a local display.
@@ -220,10 +267,10 @@ exports.handler = async (event) => {
       // tiny +R was measurably destroying the edge.
       const unprotected = o.lockedR == null || o.lockedR < 0;
       if (rv && rv.verdict === "close" && price && unprotected && currentR(o, price) < 0) {
-        const r = realizedR(o, currentR(o, price));
+        const r = realizedR(o, currentR(o, price)) - spreadRFor(o);
         const closedRec = realizePnl({
           ...o, closedAt: new Date().toISOString(),
-          outcome: r > 0.01 ? "win" : r < -0.01 ? "loss" : "scratch",
+          outcome: r > 0.09 ? "win" : r < -0.09 ? "loss" : "scratch",
           rMultiple: Number(r.toFixed(2)), exit: "ai-close", exitReason: rv.reason, exitPrice: price,
         }, riskState);
         ledger.closed.unshift(closedRec);
@@ -234,6 +281,28 @@ exports.handler = async (event) => {
       }
     }
     ledger.open = stillOpen;
+  }
+
+  // 2c. DRAWDOWN CIRCUIT-BREAKER — checked after all closes have settled equity.
+  //     Warn at -DD_WARN, pause NEW trades at -DD_PAUSE, auto-resume with
+  //     hysteresis below -DD_RESUME. Open trades keep being managed throughout.
+  ledger.ddState = ledger.ddState || { warned: false, paused: false };
+  if (!riskSettings.isDefault && riskState.account > 0) {
+    const dd = 1 - riskState.equity / riskState.account;
+    if (!ledger.ddState.paused && dd >= DD_PAUSE) {
+      ledger.ddState.paused = true;
+      manageAlerts.push({ type: "risk", level: "pause", dd });
+    } else if (ledger.ddState.paused && dd < DD_RESUME) {
+      ledger.ddState.paused = false;
+      ledger.ddState.warned = false;
+      manageAlerts.push({ type: "risk", level: "resume", dd });
+    }
+    if (!ledger.ddState.warned && !ledger.ddState.paused && dd >= DD_WARN) {
+      ledger.ddState.warned = true;
+      manageAlerts.push({ type: "risk", level: "warn", dd });
+    } else if (ledger.ddState.warned && dd < DD_WARN / 2) {
+      ledger.ddState.warned = false; // recovered well clear — re-arm the warning
+    }
   }
 
   // 3. Assemble records, score, track NEW signals — focus pairs only.
@@ -306,8 +375,15 @@ exports.handler = async (event) => {
         ledger.pending = ledger.pending.filter((p) => p !== opp);
         cancelledSetups.push({ ...opp, reason: "signal flipped direction" });
       }
-      const p = createPending(record, b.snapshot, ledger);
-      if (p) justPending.push(p);
+      // PORTFOLIO GUARDS — institutional pre-trade checks (drawdown pause,
+      // concurrent-position cap, correlated-USD-exposure cap).
+      const blocked = portfolioBlock(record, ledger);
+      if (blocked) {
+        record.risk_block = blocked; // surfaced on the dashboard card
+      } else {
+        const p = createPending(record, b.snapshot, ledger);
+        if (p) justPending.push(p);
+      }
     }
   }
 
@@ -339,6 +415,11 @@ exports.handler = async (event) => {
     // JSON bodies are where things after it risk getting lost in transit/tooling.
     generatedAt: new Date().toISOString(),
     riskSettings: riskState,        // account $ / risk % / LIVE equity driving position sizing
+    drawdown: {
+      paused: !!(ledger.ddState && ledger.ddState.paused),
+      warned: !!(ledger.ddState && ledger.ddState.warned),
+      dd: riskState.account > 0 ? Number((1 - riskState.equity / riskState.account).toFixed(4)) : 0,
+    },
     stats: ledger.stats,
     calibration: ledger.stats, // historical hit-rate the dashboard surfaces
     open: ledger.open,              // currently tracked trades (for duration)
@@ -447,8 +528,8 @@ function r5(n) { return n == null ? null : Number(n.toFixed(5)); }
 // Liquidity / session awareness — spreads are tightest and moves cleanest when
 // a major session for the pair's currencies is open. Trading dead hours is a
 // common way to get chopped up, so we factor this into the quality score.
-function sessionInfo(pair) {
-  const h = new Date().getUTCHours();
+function sessionInfo(pair, at) {
+  const h = (at || new Date()).getUTCHours(); // `at` lets the backtest ask "what session was it at bar time?"
   const london = h >= 7 && h < 16;   // London
   const ny = h >= 12 && h < 21;      // New York
   const tokyo = h >= 23 || h < 8;    // Tokyo
@@ -803,10 +884,10 @@ function evaluateOpenSignals(pair, snapshot, ledger, justClosed, manageAlerts, r
     const action = manageOpenTrade(o, snapshot);
     if (action && action.type === "close") {
       // CUT EARLY: losing trade + strong evidence — close now, don't wait for stop.
-      const r = realizedR(o, currentR(o, snapshot.price));
+      const r = realizedR(o, currentR(o, snapshot.price)) - spreadRFor(o);
       const closedRec = realizePnl({
         ...o, closedAt: new Date().toISOString(),
-        outcome: r > 0.01 ? "win" : r < -0.01 ? "loss" : "scratch",
+        outcome: r > 0.09 ? "win" : r < -0.09 ? "loss" : "scratch",
         rMultiple: Number(r.toFixed(2)), exit: "managed-close", exitReason: action.reason,
         exitPrice: snapshot.price,
       }, riskState);
@@ -903,10 +984,14 @@ function gradeWithTrailing(o, raw) {
   let lastProcessedTs = 0;
 
   const finish = (rawR, exitPrice, exit) => {
-    const total = partialTaken ? bankedR + rawR / 2 : rawR;
+    // Charge the round-trip spread — a breakeven-price exit is a small real loss
+    // in money terms, exactly like at a broker.
+    const total = (partialTaken ? bankedR + rawR / 2 : rawR) - spreadRFor(o);
     return {
       closed: true,
-      outcome: total > 0.01 ? "win" : total < -0.01 ? "loss" : "scratch",
+      // ±0.09R band: spread-only outcomes still read "scratch" (the negative R
+      // is fully counted in totals/equity either way).
+      outcome: total > 0.09 ? "win" : total < -0.09 ? "loss" : "scratch",
       rMultiple: Number(total.toFixed(2)),
       exitPrice: Number(exitPrice.toFixed(dp)),
       peakR: Number(Math.max(peakR, rawR).toFixed(2)),
@@ -1572,6 +1657,20 @@ async function dispatchAlerts(events, ledger = null, riskSettings = null) {
           : `📈 TRAIL ${m.pair} ${dir} now +${m.rNow.toFixed(1)}R\n` +
             `Move your stop up to ${m.newStop} to lock in +${m.lockedR}R and keep riding toward TP.`,
       });
+    } else if (m.type === "risk") {
+      const pct = (m.dd * 100).toFixed(1);
+      items.push({
+        key: `RISK:${m.level}:${pct}`,
+        text:
+          m.level === "pause"
+            ? `🛑 DRAWDOWN BREAKER TRIPPED — equity is down ${pct}% from your starting balance.\n` +
+              `NEW trades are PAUSED (open trades still managed). Auto-resumes if equity recovers ` +
+              `to within ${(DD_RESUME * 100).toFixed(0)}%. This is the capital-protection kill-switch doing its job.`
+            : m.level === "warn"
+            ? `⚠️ DRAWDOWN WARNING — equity is down ${pct}% from your starting balance.\n` +
+              `If it reaches ${(DD_PAUSE * 100).toFixed(0)}%, the circuit-breaker pauses all new trades.`
+            : `✅ DRAWDOWN RECOVERED — equity is back within ${(DD_RESUME * 100).toFixed(0)}% of start. New trades resumed.`,
+      });
     }
   }
   for (const c of closed) {
@@ -1660,6 +1759,16 @@ async function sendEmail(subject, text) {
 // Exposed for one-off maintenance tools (e.g. run-now?cleanupWeekend=1).
 exports.forexMarketOpen = forexMarketOpen;
 exports.recomputeStats = recomputeStats;
+
+// STRATEGY CORE — exported so backtest.js replays the EXACT code the live
+// engine trades with (no reimplementation drift; institutional requirement).
+exports.core = {
+  tparseUTC, resample, h4Key, d1Key, w1Key,
+  analyse, summarize, scoreBias, computeLevels, qualityScore,
+  sessionInfo, getCandles, spreadRFor, usdSide, r5,
+  gradeWithTrailing, realizedR, currentR,
+  NOTIFY_MIN_SCORE, PULLBACK_ATR, ENTRY_WINDOW_HOURS, SPREADS,
+};
 
 exports.testAlert = async () => {
   const text = "✅ FX Signal Desk test — your alerts are working.";
