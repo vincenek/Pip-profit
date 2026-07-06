@@ -68,6 +68,12 @@ function spreadRFor(o) {
   return spread / risk; // cost expressed in R (typically ~0.02-0.05R)
 }
 
+// DATA-DRIVEN per-pair risk scaling (backtest 157d, 2026-07): GBP/USD is the
+// measurably weakest pair — max drawdown 13.6R, an 8-loss streak, negative
+// out-of-sample expectancy — so it trades at HALF money-risk. Signals/stats
+// still tracked at full R fidelity; only the $ sizing is scaled.
+const PAIR_RISK_MULT = { "GBP/USD": 0.5 };
+
 // PORTFOLIO RISK (institutional guards):
 const MAX_OPEN_TRADES = Number(process.env.MAX_OPEN_TRADES || 3);      // total concurrent positions
 const MAX_SAME_SIDE_USD = Number(process.env.MAX_SAME_SIDE_USD || 2);  // same-direction USD exposure cap
@@ -141,7 +147,7 @@ function positionSize(entry, stop, pair, risk) {
   if (!account || !riskPct || !entry || !stop) return null;
   const stopDist = Math.abs(entry - stop);
   if (stopDist <= 0) return null;
-  const riskAmt = account * riskPct / 100;
+  const riskAmt = account * riskPct / 100 * (PAIR_RISK_MULT[pair] || 1);
   const [base, quote] = pair.split("/");
   const contract = 100000;
   const usdPerLotPerPrice = quote === "USD" ? contract : base === "USD" ? contract / entry : contract;
@@ -1767,7 +1773,7 @@ exports.core = {
   analyse, summarize, scoreBias, computeLevels, qualityScore,
   sessionInfo, getCandles, spreadRFor, usdSide, r5,
   gradeWithTrailing, realizedR, currentR,
-  NOTIFY_MIN_SCORE, PULLBACK_ATR, ENTRY_WINDOW_HOURS, SPREADS,
+  NOTIFY_MIN_SCORE, PULLBACK_ATR, ENTRY_WINDOW_HOURS, SPREADS, PAIR_RISK_MULT,
 };
 
 exports.testAlert = async () => {

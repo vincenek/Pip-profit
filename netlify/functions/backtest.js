@@ -35,8 +35,10 @@ exports.handler = async (event) => {
 
   const qs = (event && event.queryStringParameters) || {};
   const pairs = qs.pair ? [qs.pair.toUpperCase()] : FOCUS;
+  // ?gate=70 sweeps the quality threshold — parameter research without redeploys.
+  const gate = Math.max(0, Math.min(100, Number(qs.gate) || C.NOTIFY_MIN_SCORE));
   const started = Date.now();
-  const out = { generatedAt: new Date().toISOString(), method: METHOD_NOTE, results: {} };
+  const out = { generatedAt: new Date().toISOString(), qualityGate: gate, method: METHOD_NOTE, results: {} };
 
   for (const pair of pairs) {
     if (Date.now() - started > 8000) {
@@ -45,7 +47,7 @@ exports.handler = async (event) => {
     }
     try {
       const base = await C.getCandles(pair);
-      out.results[pair] = backtestPair(pair, base);
+      out.results[pair] = backtestPair(pair, base, gate);
     } catch (err) {
       out.results[pair] = { error: String(err) };
     }
@@ -62,7 +64,8 @@ const METHOD_NOTE =
 // ---------------------------------------------------------------------------
 // Per-pair simulation
 // ---------------------------------------------------------------------------
-function backtestPair(pair, base) {
+function backtestPair(pair, base, gate) {
+  if (gate == null) gate = C.NOTIFY_MIN_SCORE;
   const n = base.closes.length;
   if (n < 1400) return { error: "not enough history (" + n + " bars)" };
 
@@ -142,7 +145,7 @@ function backtestPair(pair, base) {
       const quality = C.qualityScore(snap, { direction: dir, confidence: 70 }, { total: 0 });
       const stacked =
         (open && open.direction === dir) || (pending && pending.direction === dir);
-      if (quality >= C.NOTIFY_MIN_SCORE && !stacked) {
+      if (quality >= gate && !stacked) {
         const buy = dir === "buy";
         const atr = snap.atr && snap.atr > 0 ? snap.atr : snap.price * 0.001;
         const dp = snap.price >= 10 ? 3 : 5;

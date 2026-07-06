@@ -12,3 +12,10 @@
 # Runs every 30 minutes. "@hourly" or "*/15 * * * *" also work.
 [functions."signal-engine"]
   schedule = "*/30 * * * *"
+
+# Always revalidate the app shell — a cached index.html (or the installed PWA)
+# must never pin an old deploy. Assets are tiny; ETag revalidation keeps it cheap.
+[[headers]]
+  for = "/*"
+  [headers.values]
+    Cache-Control = "no-cache"

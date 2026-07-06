@@ -179,6 +179,22 @@
     </div>
 
     <script>
+        // Kill zombie service workers left by the OLD PipProfit app — a stale SW
+        // pins an ancient cached page forever (the "it didn't deploy" illusion,
+        // worst in the installed phone app). Unregister + purge caches, then
+        // reload once so this session immediately serves the live deploy.
+        if ('serviceWorker' in navigator) {
+            try {
+                if (window.caches && caches.keys) caches.keys().then(ks => ks.forEach(k => caches.delete(k))).catch(() => {});
+                navigator.serviceWorker.getRegistrations().then(rs => {
+                    if (rs.length && !sessionStorage.getItem('swPurged')) {
+                        sessionStorage.setItem('swPurged', '1'); // one reload max — no loops
+                        Promise.all(rs.map(r => r.unregister())).then(() => location.reload());
+                    }
+                }).catch(() => {});
+            } catch (e) { /* never block the app on cleanup */ }
+        }
+
         const grid = document.getElementById('grid');
         const track = document.getElementById('track');
         const statusEl = document.getElementById('status');
@@ -323,7 +339,10 @@
             if (!account || !riskPct || !entry || !stop) return null;
             const stopDist = Math.abs(entry - stop);
             if (stopDist <= 0) return null;
-            const riskAmt = account * riskPct / 100;
+            // GBP/USD trades at half money-risk (weakest pair in the 157-day
+            // backtest: 13.6R max drawdown, 8-loss streak) — mirrors the server.
+            const pairMult = pair === 'GBP/USD' ? 0.5 : 1;
+            const riskAmt = account * riskPct / 100 * pairMult;
             const isJPY = /JPY/.test(pair);
             const pips = stopDist / (isJPY ? 0.01 : 0.0001);
             const [base, quote] = pair.split('/');
