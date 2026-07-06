@@ -215,8 +215,12 @@ exports.handler = async (event) => {
     for (const o of ledger.open) {
       const rv = aiReviews[o.pair.toUpperCase()];
       const price = priceByPair[o.pair];
-      if (rv && rv.verdict === "close" && price) {
-        const r = currentR(o, price);
+      // The AI may only cut LOSING trades still on their original stop — winners
+      // are managed mechanically (TP1 partial + trail). Early-closing winners at
+      // tiny +R was measurably destroying the edge.
+      const unprotected = o.lockedR == null || o.lockedR < 0;
+      if (rv && rv.verdict === "close" && price && unprotected && currentR(o, price) < 0) {
+        const r = realizedR(o, currentR(o, price));
         const closedRec = realizePnl({
           ...o, closedAt: new Date().toISOString(),
           outcome: r > 0.01 ? "win" : r < -0.01 ? "loss" : "scratch",
@@ -798,8 +802,8 @@ function evaluateOpenSignals(pair, snapshot, ledger, justClosed, manageAlerts, r
     // 2. Active management on the still-open trade.
     const action = manageOpenTrade(o, snapshot);
     if (action && action.type === "close") {
-      // CUT EARLY: thesis broke — close now at current price (don't wait for stop).
-      const r = currentR(o, snapshot.price);
+      // CUT EARLY: losing trade + strong evidence — close now, don't wait for stop.
+      const r = realizedR(o, currentR(o, snapshot.price));
       const closedRec = realizePnl({
         ...o, closedAt: new Date().toISOString(),
         outcome: r > 0.01 ? "win" : r < -0.01 ? "loss" : "scratch",
@@ -825,25 +829,37 @@ function currentR(o, price) {
   return (o.direction === "buy" ? price - o.entry : o.entry - price) / risk;
 }
 
-// Active management: cut early when the reason breaks; alert when the trailing
-// stop (already moved by gradeWithTrailing) steps up.
+// Full-position realized R for a trade closed at raw price-R `r`: after the
+// TP1 partial, half is already banked and the runner is half-size.
+function realizedR(o, r) {
+  return o.partialTaken ? (o.bankedR || 0) + r / 2 : r;
+}
+
+// Active management. Philosophy (measured, not vibes): early-closes may ONLY
+// cut LOSING, unprotected trades on strong evidence — never snatch small
+// profits from winners. Winners are managed mechanically (TP1 partial + trail).
+// The old triggers closed winners at +0.2R and booked them as "wins", which is
+// exactly how avg win fell to ~0.79R while the win-rate looked great.
 function manageOpenTrade(o, s) {
   const buy = o.direction === "buy";
   const rNow = currentR(o, s.price);
 
-  const biasAgainst = buy ? s.biasScore <= -2 : s.biasScore >= 2;
-  const momAgainst = buy ? s.h1.macdHist < 0 : s.h1.macdHist > 0;
+  // Strong evidence only: a decisive higher-timeframe bias flip (clear majority
+  // of factors reversed), or imminent high-impact news — and the trade must be
+  // LOSING and still on its original stop.
+  const biasAgainst = buy ? s.biasScore <= -3 : s.biasScore >= 3;
   const news = s.newsBlackout;
-
-  // Only cut a trade that isn't already protected in profit (lockedR < 0 means
-  // still on the original stop). Once trailed to breakeven+, let the stop work.
-  if ((o.lockedR == null || o.lockedR < 0) &&
-      (biasAgainst || (rNow < -0.7 && momAgainst) || (news && rNow < 0.3))) {
+  if ((o.lockedR == null || o.lockedR < 0) && rNow < 0 && (biasAgainst || news)) {
     const reasons = [];
-    if (biasAgainst) reasons.push("higher-timeframe bias flipped against the trade");
-    if (rNow < -0.7 && momAgainst) reasons.push("price moving toward your stop with momentum against");
-    if (news) reasons.push("high-impact news now imminent");
+    if (biasAgainst) reasons.push("higher-timeframe bias decisively flipped against the trade");
+    if (news) reasons.push("high-impact news imminent while the trade is underwater");
     return { type: "close", reason: reasons.join("; "), rNow };
+  }
+
+  // TP1 partial banked (gradeWithTrailing set it) — alert once.
+  if (o.partialTaken && !o.partialAlerted) {
+    o.partialAlerted = true;
+    return { type: "partial", rNow, tp1: o.tp1, bankedR: o.bankedR || 0.9 };
   }
 
   // Trailing-stop step-up alert (gradeWithTrailing already moved o.currentStop).
@@ -856,15 +872,24 @@ function manageOpenTrade(o, s) {
   return null;
 }
 
-// Simulate the trade candle-by-candle with the breakeven+trail stop. Returns
-// {closed:true, outcome, rMultiple, ...} on exit, else {closed:false} and
-// updates o.peakR / o.lockedR / o.currentStop / o.stage in place.
+// Simulate the trade candle-by-candle. Exit plan:
+//   - TP1 (1.8R): bank HALF (+0.9R on the full-position scale), stop -> breakeven,
+//     runner continues toward TP2 (3R).
+//   - Trail: once peak >= +1R, stop trails ~1R behind in HALF-R steps.
+//   - Stop-first tiebreak within a candle (conservative).
+// INCREMENTAL: only candles after o.gradedUpTo are processed. (Re-walking old
+// candles with an already-tightened stop was retroactively "stopping out" trades
+// on candles they had already survived — e.g. the entry candle itself always
+// touches the entry zone, so any trade trailed to breakeven instantly became a
+// phantom scratch on the next run. That bug polluted the historical stats.)
+// Returns {closed:true, ...} on exit, else {closed:false} and updates
+// o.peakR / o.lockedR / o.currentStop / o.stage / o.partialTaken / o.gradedUpTo.
 function gradeWithTrailing(o, raw) {
   const { datetimes, highs, lows } = raw;
   const buy = o.direction === "buy";
   const entry = o.entry;
   const risk = Math.abs(entry - o.sl) || 1e-9;
-  const tp2 = o.tp2;
+  const tp1 = o.tp1, tp2 = o.tp2;
   const dp = entry >= 10 ? 3 : 5;
   const Rof = (p) => (buy ? p - entry : entry - p) / risk;
   const stopPrice = (lockedR) =>
@@ -872,48 +897,73 @@ function gradeWithTrailing(o, raw) {
 
   let peakR = o.peakR || 0;
   let lockedR = o.lockedR == null ? -1 : o.lockedR;
+  let partialTaken = !!o.partialTaken;
+  let bankedR = o.bankedR || 0;
+  const fromTs = Math.max(o.openedTs || 0, o.gradedUpTo || 0);
+  let lastProcessedTs = 0;
+
+  const finish = (rawR, exitPrice, exit) => {
+    const total = partialTaken ? bankedR + rawR / 2 : rawR;
+    return {
+      closed: true,
+      outcome: total > 0.01 ? "win" : total < -0.01 ? "loss" : "scratch",
+      rMultiple: Number(total.toFixed(2)),
+      exitPrice: Number(exitPrice.toFixed(dp)),
+      peakR: Number(Math.max(peakR, rawR).toFixed(2)),
+      partial: partialTaken,
+      exit,
+    };
+  };
 
   for (let i = 0; i < datetimes.length; i++) {
-    if (tparseUTC(datetimes[i]) <= o.openedTs) continue;
+    const ts = tparseUTC(datetimes[i]);
+    if (ts <= fromTs) continue;
+    // Only grade COMPLETED hourly candles — the forming one can still move.
+    if (ts + 3600000 > Date.now()) continue;
+    lastProcessedTs = Math.max(lastProcessedTs, ts);
     const hi = highs[i], lo = lows[i];
     const eff = stopPrice(lockedR);
 
     // a) Stop (uses the stop valid coming into this candle; stop-first tiebreak).
     const stopHit = buy ? lo <= eff : hi >= eff;
     if (stopHit) {
-      const r = Rof(eff);
-      return {
-        closed: true,
-        outcome: r > 0.01 ? "win" : r < -0.01 ? "loss" : "scratch",
-        rMultiple: Number(r.toFixed(2)),
-        exitPrice: Number(eff.toFixed(dp)),
-        peakR: Number(peakR.toFixed(2)),
-        exit: lockedR < 0 ? "stop" : lockedR === 0 ? "breakeven" : "trail +" + lockedR + "R",
-      };
+      const exit = lockedR < 0 ? "stop"
+        : lockedR === 0 ? (partialTaken ? "runner breakeven" : "breakeven")
+        : "trail +" + lockedR + "R";
+      return finish(Rof(eff), eff, exit);
     }
-    // b) Final target.
-    const tpHit = buy ? hi >= tp2 : lo <= tp2;
-    if (tpHit) {
-      const r = Rof(tp2);
-      return {
-        closed: true, outcome: "win", rMultiple: Number(r.toFixed(2)),
-        exitPrice: tp2, peakR: Number(Math.max(peakR, r).toFixed(2)), exit: "target",
-      };
+    // b) TP1 — bank half, protect the runner at breakeven.
+    if (!partialTaken && (buy ? hi >= tp1 : lo <= tp1)) {
+      partialTaken = true;
+      bankedR = Number((Rof(tp1) / 2).toFixed(2)); // ~+0.9R banked
+      if (lockedR < 0) lockedR = 0;
+      if (Rof(tp1) > peakR) peakR = Rof(tp1);
     }
-    // c) Trail update for NEXT candle.
+    // c) Final target for the runner (or full position if TP1 not yet hit —
+    //    a single huge candle can pass both; both are favourable).
+    if (buy ? hi >= tp2 : lo <= tp2) {
+      return finish(Rof(tp2), tp2, "target");
+    }
+    // d) Trail update for the NEXT candle: ~1R behind peak, in half-R steps.
     const favR = buy ? Rof(hi) : Rof(lo);
     if (favR > peakR) peakR = favR;
-    if (peakR >= 1) {
-      const newLocked = Math.floor(peakR) - 1; // 0 at [1,2), 1 at [2,3), ...
+    if (peakR >= 1 - 1e-9) {
+      // 0 at [1,1.5), 0.5 at [1.5,2), 1 at [2,2.5)... epsilon guards float edges
+      // (e.g. (156.20-155.60)/0.30 === 1.99999... would otherwise miss the 2R step).
+      const newLocked = Math.floor((peakR - 1) * 2 + 1e-9) / 2;
       if (newLocked > lockedR) lockedR = newLocked;
     }
   }
 
-  // Still open — persist live management state.
+  // Still open — persist live management state (incremental high-water mark).
   o.peakR = Number(peakR.toFixed(2));
   o.lockedR = lockedR;
+  o.partialTaken = partialTaken;
+  o.bankedR = bankedR;
   o.currentStop = Number(stopPrice(lockedR).toFixed(dp));
-  o.stage = lockedR < 0 ? "initial" : lockedR === 0 ? "breakeven" : "+" + lockedR + "R locked";
+  o.stage = (partialTaken ? "TP1 banked +" + bankedR + "R · " : "") +
+    (lockedR < 0 ? "initial" : lockedR === 0 ? "breakeven" : "+" + lockedR + "R locked");
+  if (lastProcessedTs > 0) o.gradedUpTo = lastProcessedTs;
   return { closed: false };
 }
 
@@ -1092,6 +1142,7 @@ function checkPending(pair, snapshot, ledger, justEntered, cancelled, riskState)
         timeframe: p.timeframe, qualityScore: p.qualityScore,
         openedAt: new Date(triggerTs).toISOString(), openedTs: triggerTs,
         peakR: 0, lockedR: -1, currentStop: lv.sl, stage: "initial", alertedLockedR: -1,
+        partialTaken: false, bankedR: 0, gradedUpTo: triggerTs,
         viaPullback: true,
         riskAmt: ps ? ps.riskAmt : null,
         sizeLots: ps ? ps.lots : null,
@@ -1192,10 +1243,13 @@ function perPairBlock(s) {
 async function analyzePairs(snapshots, perfFeedback, openTrades = []) {
   const blocks = snapshots.map(perPairBlock).join("\n");
   const openBlock = openTrades.length
-    ? `\nOPEN POSITIONS — review each (hold or close). The desk handles stop-trailing; ` +
-      `your job is judgement: 'close' if the REASON for the trade has broken (trend ` +
-      `flipped against it, momentum reversed, fresh news risk) — be willing to cut. ` +
-      `Otherwise 'hold'.\n` +
+    ? `\nOPEN POSITIONS — review each (hold or close). The desk manages exits ` +
+      `mechanically (partial profit at TP1, stop to breakeven, trailing) — do NOT ` +
+      `close to lock in a small gain; that is measured to destroy this desk's edge. ` +
+      `Recommend 'close' ONLY for a LOSING trade whose thesis is decisively broken ` +
+      `(clear higher-timeframe reversal against it, or major news risk while it is ` +
+      `underwater). A wobble, pullback, or loss of momentum is NOT enough — the ` +
+      `stop-loss already caps the risk. Default to 'hold'.\n` +
       openTrades.map((o) =>
         `[${o.pair}] ${o.direction.toUpperCase()} entry ${o.entry} stop ${o.currentStop} ` +
         `stage ${o.stage} peak +${o.peakR}R`
@@ -1468,6 +1522,7 @@ async function dispatchAlerts(events, ledger = null, riskSettings = null) {
       text:
         `${arrow} ${o.pair} NOW @ ${o.entry}  (score ${o.qualityScore})\n` +
         `Stop ${o.sl}\nTP1 ${o.tp1}   TP2 ${o.tp2}\nR:R 1:1.8 · ${o.timeframe || ""}${sizeLineFor(o.entry, o.sl, o.pair)}\n` +
+        `Plan: bank HALF at TP1 → stop to breakeven → runner to TP2 (I'll email each step).\n` +
         `Price pulled back to the level — place the trade now.`,
     });
   }
@@ -1500,13 +1555,20 @@ async function dispatchAlerts(events, ledger = null, riskSettings = null) {
           `Reason: ${m.reason}.\nNow ${m.rNow >= 0 ? "+" : ""}${m.rNow.toFixed(1)}R (entry ${m.entry}).\n` +
           `Consider exiting early or tightening your stop.`,
       });
+    } else if (m.type === "partial") {
+      items.push({
+        key: `M:partial:${m.pair}:${m.entry}`,
+        text:
+          `🎯 TP1 HIT ${m.pair} ${dir} @ ${m.tp1}\n` +
+          `Bank HALF the position now (+${m.bankedR}R locked) and move your stop to ` +
+          `breakeven (${m.entry}). The runner now rides risk-free toward TP2.`,
+      });
     } else if (m.type === "trail") {
       items.push({
         key: `M:trail:${m.pair}:${m.entry}:${m.lockedR}`,
         text: m.lockedR === 0
-          ? `🎯 TAKE ACTION ${m.pair} ${dir} is +${m.rNow.toFixed(1)}R\n` +
-            `You've hit +1R. Lock it in: take partial profit and move your stop to ` +
-            `breakeven (${m.newStop}) so the rest runs risk-free — or close to bank it.`
+          ? `🛡️ PROTECT ${m.pair} ${dir} is +${m.rNow.toFixed(1)}R\n` +
+            `Move your stop to breakeven (${m.newStop}) — worst case is now a scratch, not a loss.`
           : `📈 TRAIL ${m.pair} ${dir} now +${m.rNow.toFixed(1)}R\n` +
             `Move your stop up to ${m.newStop} to lock in +${m.lockedR}R and keep riding toward TP.`,
       });
