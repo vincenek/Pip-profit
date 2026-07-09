@@ -57,6 +57,21 @@ function brokerModule() {
 let brokerQueue = [];
 function bq(type, payload) { brokerQueue.push({ type, ...payload }); }
 
+// Desk deliberations produced during this run — merged into the standalone
+// "desklog" blob (its own key so nothing else can clobber it).
+let deskNewEntries = [];
+async function mergeDeskLog(store) {
+  let log = [];
+  try {
+    log = (await store.get("desklog", { type: "json", consistency: "strong" })) || [];
+  } catch (e) { /* first run or read hiccup — start fresh */ }
+  if (deskNewEntries.length) {
+    log = log.concat(deskNewEntries).slice(-10);
+    await store.setJSON("desklog", log).catch((e) => console.warn("desklog save:", String(e)));
+  }
+  return log;
+}
+
 const PAIRS = (process.env.SIGNAL_PAIRS || "EUR/USD,GBP/USD,USD/JPY")
   .split(",")
   .map((p) => p.trim().toUpperCase())
@@ -198,6 +213,7 @@ exports.handler = async (event) => {
   try { if (event && event.blobs) connectLambda(event); } catch (e) { /* noop */ }
 
   brokerQueue = []; // fresh queue per run (lambda containers get reused)
+  deskNewEntries = [];
   const store = getStore("signals");
   const riskSettings = await getRiskSettings(store); // account $ + risk % (dashboard-set or env fallback)
   // Mutable copy — trades closing DURING this run compound into riskState.equity
@@ -212,7 +228,7 @@ exports.handler = async (event) => {
   });
 
   // Existing ledger (track record) we will update as signals resolve.
-  const ledger = (await store.get("ledger", { type: "json" })) || {
+  const ledger = (await store.get("ledger", { type: "json", consistency: "strong" })) || {
     open: [],
     closed: [],
     stats: emptyStats(),
@@ -508,7 +524,7 @@ exports.handler = async (event) => {
       deskCallsToday: ledger.deskCalls ? ledger.deskCalls.count : 0,
       deskMax: DESK_MAX_PER_DAY,
     },
-    deskLog: ledger.deskLog || [],   // recent committee deliberations (visualized)
+    deskLog: await mergeDeskLog(store), // recent committee deliberations (own blob key)
     drawdown: {
       paused: !!(ledger.ddState && ledger.ddState.paused),
       warned: !!(ledger.ddState && ledger.ddState.warned),
@@ -1483,11 +1499,13 @@ async function deskReview(record, s, playbook, ledger, riskState, opts = {}) {
         objections: (risk.objections || []).slice(0, 3).map((x) => String(x).slice(0, 90)),
       },
     };
-    // Deliberation log — the dashboard renders the agents from this.
-    ledger.deskLog = (ledger.deskLog || []).concat([{
+    // Deliberation log — collected per run, merged into its OWN blob key at
+    // the end. (Living inside the big ledger blob got clobbered by concurrent
+    // runs: Netlify Blobs reads are eventually consistent, last-writer-wins.)
+    deskNewEntries.push({
       when: new Date().toISOString(), pair: record.pair, direction: record.direction,
       quality: record.qualityScore, test: !!opts.test, ...desk,
-    }]).slice(-10);
+    });
     return desk;
   } catch (err) {
     console.warn("desk unavailable:", String(err).slice(0, 120));
@@ -2022,7 +2040,8 @@ exports.recomputeStats = recomputeStats;
 // the desk's daily budget; the deliberation is logged (flagged test) for the UI.
 exports.deskTest = async () => {
   const store = getStore("signals");
-  const ledger = (await store.get("ledger", { type: "json" })) || { open: [], closed: [], pending: [] };
+  deskNewEntries = []; // fresh collector for this invocation
+  const ledger = (await store.get("ledger", { type: "json", consistency: "strong" })) || { open: [], closed: [], pending: [] };
   const playbook = (await store.get("playbook", { type: "json" })) || { principles: [], lessons: [] };
   const riskSettings = await getRiskSettings(store);
   const calendar = await getCalendar().catch(() => []);
@@ -2034,10 +2053,9 @@ exports.deskTest = async () => {
     qualityScore: qualityScore(snapshot, { direction, confidence: 65 }, { total: 0 }),
   };
   const desk = await deskReview(record, snapshot, playbook, ledger, riskSettings, { test: true });
-  await store.setJSON("ledger", ledger); // persist the deskLog entry
-  const latest = (await store.get("latest", { type: "json" })) || {};
-  latest.deskLog = ledger.deskLog || [];
-  await store.setJSON("latest", latest);
+  // Persist to the standalone desklog blob — its own key, so nothing (e.g. a
+  // concurrent scheduled run rewriting the ledger) can clobber it.
+  await mergeDeskLog(store);
   return { pair, direction, quality: record.qualityScore, desk };
 };
 
