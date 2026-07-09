@@ -59,8 +59,28 @@ exports.handler = async (event) => {
     }
   }
 
-  // GET
+  // GET — read settings; or SET them via URL for convenience:
+  //   /settings?set=1&account=100&risk=1
+  // Same rules as POST: changing the account NUMBER resets equity to it (a
+  // deliberate "set my balance to X", exactly like re-funding a demo account).
   try {
+    const qs = event.queryStringParameters || {};
+    if (qs.set === "1" || qs.set === "true") {
+      const account = Number(qs.account);
+      const riskPct = Number(qs.risk != null ? qs.risk : qs.riskPct);
+      if (!Number.isFinite(account) || account <= 0 || !Number.isFinite(riskPct) || riskPct <= 0 || riskPct > 100) {
+        return { statusCode: 400, headers, body: JSON.stringify({ error: "usage: ?set=1&account=100&risk=1" }) };
+      }
+      const existing = (await store.get("settings", { type: "json" })) || {};
+      const accountChanged = !existing.account || Math.abs(Number(existing.account) - account) > 0.0001;
+      const equity = accountChanged
+        ? account
+        : (Number.isFinite(Number(existing.equity)) && Number(existing.equity) > 0 ? Number(existing.equity) : account);
+      const settings = { account, riskPct, equity, updatedAt: new Date().toISOString() };
+      await store.setJSON("settings", settings);
+      return { statusCode: 200, headers, body: JSON.stringify({ saved: true, ...settings }) };
+    }
+
     const raw = (await store.get("settings", { type: "json" })) || { account: 0, riskPct: 0, equity: 0 };
     const equity = Number.isFinite(Number(raw.equity)) && Number(raw.equity) > 0 ? Number(raw.equity) : Number(raw.account) || 0;
     return { statusCode: 200, headers, body: JSON.stringify({ ...raw, equity }) };

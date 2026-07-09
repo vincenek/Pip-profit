@@ -612,7 +612,7 @@
                 if (data.broker) {
                     brokerStatus.textContent = data.broker.enabled
                         ? `🟢 broker: ${data.broker.name || 'demo'} ACTIVE${data.broker.executed ? ` · ${data.broker.executed} action(s) last run` : ''}${data.broker.errors && data.broker.errors.length ? ` · ⚠ ${data.broker.errors[0]}` : ''}`
-                        : 'broker: paper mode — connect your Exness MT5 demo (MetaApi keys) or OANDA practice to let the agents execute';
+                        : '📊 in-app trading — the agents trade your set balance in a full simulation (entries, stops, partials, P/L)';
                 }
                 if (data.agent) {
                     if (data.agent.dayplan) {
