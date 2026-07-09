@@ -138,6 +138,17 @@ exports.handler = async (event) => {
     }
   }
 
+  // ?brokertest=1 → verify the demo-broker connection (which executor is
+  // armed, authentication, account balance). No trade, no engine run.
+  if (qs && (qs.brokertest === "1" || qs.brokertest === "true")) {
+    try {
+      const result = await engine.brokerTest();
+      return { statusCode: 200, headers, body: JSON.stringify({ brokertest: true, ...result }, null, 2) };
+    } catch (err) {
+      return { statusCode: 500, headers, body: JSON.stringify({ error: String(err) }, null, 2) };
+    }
+  }
+
   // ?desktest=1 → convene the Desk Committee on live data right now (visible
   // deliberation, no trade, doesn't consume the desk's daily budget).
   if (qs && (qs.desktest === "1" || qs.desktest === "true")) {

@@ -1472,7 +1472,16 @@ function checkPending(pair, snapshot, ledger, justEntered, cancelled, riskState)
       // Shadow (vetoed) setups get NO money sizing — pure R simulation.
       const psRaw = p.shadow ? null : positionSize(lv.entry, lv.sl, pair, riskState);
       const dm = p.deskMult || 1;
-      const ps = psRaw ? { ...psRaw, riskAmt: psRaw.riskAmt * dm, lots: psRaw.lots * dm, units: psRaw.units * dm } : null;
+      let ps = psRaw ? { ...psRaw, riskAmt: psRaw.riskAmt * dm, lots: psRaw.lots * dm, units: psRaw.units * dm } : null;
+      let minLotClamped = false;
+      if (ps && brokerModule().mod && ps.lots < 0.01) {
+        // Broker minimum is 0.01 lots (1000 units): record the REAL risk taken.
+        const stopDist = Math.abs(lv.entry - lv.sl);
+        const [bse, qte] = pair.split("/");
+        const perUnit = qte === "USD" ? stopDist : bse === "USD" ? stopDist / lv.entry : stopDist;
+        ps = { ...ps, lots: 0.01, units: 1000, riskAmt: Number((1000 * perUnit).toFixed(2)) };
+        minLotClamped = true;
+      }
       const o = {
         id: `${keyFor(pair)}-${Date.now()}`,
         pair, direction: p.direction,
@@ -1484,6 +1493,7 @@ function checkPending(pair, snapshot, ledger, justEntered, cancelled, riskState)
         viaPullback: true,
         riskAmt: ps ? ps.riskAmt : null,
         sizeLots: ps ? ps.lots : null,
+        minLotClamped,
         deskMult: dm,
         shadow: !!p.shadow,
         deskVerdict: p.deskVerdict || null,
@@ -2190,6 +2200,21 @@ async function sendEmail(subject, text) {
 // Exposed for one-off maintenance tools (e.g. run-now?cleanupWeekend=1).
 exports.forexMarketOpen = forexMarketOpen;
 exports.recomputeStats = recomputeStats;
+
+// BROKER TEST — verify the demo-broker connection (run-now?brokertest=1):
+// which executor is armed, can we authenticate, what is the account balance?
+exports.brokerTest = async () => {
+  const routed = brokerModule();
+  if (!routed.mod) {
+    return { broker: "paper", note: "no broker env vars armed (MT5 needs META_API_TOKEN + META_API_ACCOUNT_ID + MT5_CONFIRM_DEMO=yes)" };
+  }
+  try {
+    const balance = await routed.mod.getBalance();
+    return { broker: routed.name, connected: balance != null, balance };
+  } catch (err) {
+    return { broker: routed.name, connected: false, error: String(err).slice(0, 300) };
+  }
+};
 
 // DESK TEST — convene the committee on live data RIGHT NOW (run-now?desktest=1)
 // so the deliberation is visible on demand. Doesn't trade, doesn't count against
