@@ -123,4 +123,13 @@ async function execute(queue) {
   return { enabled: true, executed, errors };
 }
 
-module.exports = { enabled, execute };
+// The practice account's actual balance — when connected, the agents size
+// trades off THIS (the broker is the source of truth, like MetaTrader).
+async function getBalance() {
+  if (!enabled()) return null;
+  const r = await api("GET", "/summary");
+  const bal = r && r.account && Number(r.account.balance);
+  return Number.isFinite(bal) && bal > 0 ? bal : null;
+}
+
+module.exports = { enabled, execute, getBalance };

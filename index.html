@@ -100,6 +100,7 @@
         .risk-box .risk-note { font-size:.78rem; color:var(--muted); display:block; margin-top:8px; }
         .sizing { color:var(--green); font-weight:700; }
         .show-more { display:block; margin:10px auto 0; background:var(--panel2); border:1px solid var(--line); color:var(--muted); border-radius:8px; padding:8px 18px; font:inherit; font-size:.8rem; cursor:pointer; }
+        .mini-btn { background:var(--panel2); border:1px solid var(--line); color:var(--muted); border-radius:8px; padding:4px 12px; font:inherit; font-size:.72rem; cursor:pointer; }
         .desk-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(215px,1fr)); gap:10px; margin-top:10px; }
         .agent-card { background:var(--panel2); border:1px solid var(--line); border-radius:10px; padding:10px 12px; font-size:.8rem; line-height:1.45; }
         .agent-card h4 { margin:0 0 6px; font-size:.78rem; letter-spacing:.03em; }
@@ -133,37 +134,29 @@
             </div>
         </header>
         <div class="sub">
-            Personal multi-timeframe forex signals — Daily → 4H → 1H, ADX trend filter,
-            session/liquidity + economic-calendar awareness, ATR-based stops, and an
-            objective <b>quality score</b> blended with the engine's real win-rate.
-            Optional Telegram/WhatsApp/email alerts. Auto-refreshes every minute.
+            Autonomous FX trading desk — the agents analyse, deliberate, execute (demo) and learn. Auto-refreshes every minute.
         </div>
 
         <div class="track" id="track"></div>
 
         <div id="ddBanner" style="display:none;"></div>
 
-        <div class="risk-box">
-            <div class="balance-row" id="balanceRow" style="display:none;">
+        <div class="risk-box" id="agentBox">
+            <div class="balance-row" id="balanceRow">
                 <div class="balance-main">
-                    <span class="balance-label" id="balanceLabel">💰 Live Balance</span>
+                    <span class="balance-label" id="balanceLabel">💰 Balance</span>
                     <span class="balance-amount" id="balanceAmount">—</span>
+                    <button id="setBalBtn" class="mini-btn">Set balance</button>
                 </div>
                 <span class="balance-delta" id="balanceDelta"></span>
             </div>
-            <div class="risk-inputs">
-                <span class="risk-label">Set / reset balance:</span>
-                <label>Account $ <input id="acct" type="number" min="0" step="10" placeholder="1000"></label>
+            <div class="risk-inputs" id="riskInputs" style="display:none;">
+                <label>Account $ <input id="acct" type="number" min="0" step="10" placeholder="e.g. 10"></label>
                 <label>Risk % <input id="riskpct" type="number" min="0.1" max="10" step="0.1" placeholder="1"></label>
+                <span class="risk-note" id="riskNote" style="margin-top:0;"></span>
             </div>
-            <span class="risk-note" id="riskNote">Set your account &amp; risk % — each trade will show exact lot size.</span>
-        </div>
-
-        <div class="risk-box" id="agentBox">
-            <div class="risk-inputs" style="justify-content:space-between; width:100%;">
-                <span class="risk-label">🤖 Agent</span>
-                <span class="risk-note" id="brokerStatus" style="margin-top:0;">paper mode</span>
-            </div>
+            <div class="risk-note" id="brokerStatus">broker: paper mode</div>
+            <div class="risk-note" id="ctxLine" style="display:none;"></div>
             <div id="dayplanBox" style="display:none; margin-top:8px;">
                 <div class="risk-note" style="margin-top:0;"><b>Day plan</b> <span id="dayplanWhen"></span></div>
                 <div id="dayplanText" style="font-size:.85rem; margin-top:4px;"></div>
@@ -174,7 +167,7 @@
             </details>
             <div id="deskPanel" style="margin-top:10px; border-top:1px solid var(--line); padding-top:10px;">
                 <div class="risk-inputs" style="justify-content:space-between; width:100%;">
-                    <span class="risk-note" style="margin-top:0;"><b>🏛 The Desk</b> — 📈 Analyst · 🛡 Risk Manager · 👔 Head Trader <span id="deskBudget"></span></span>
+                    <span class="risk-note" style="margin-top:0;"><b>🏛 The Desk</b> — 📈 Analyst · 🛡 Risk Manager · 👔 Head Trader <span id="deskBudget"></span><span id="deskScoreEl"></span></span>
                     <button id="deskTestBtn">Convene the desk now</button>
                 </div>
                 <div id="deskLatest"></div>
@@ -262,25 +255,24 @@
         const balanceLabel = document.getElementById('balanceLabel');
         const balanceAmount = document.getElementById('balanceAmount');
         const balanceDelta = document.getElementById('balanceDelta');
-        let usingDefaultBalance = false; // showing the built-in $1000@1% example, not your real numbers
-        let liveRiskPct = 0; // risk% backing the default/synced equity, used when the input is blank
-        // Once the user has REAL saved settings, they are the authority: the stale
-        // engine-run snapshot (latest.riskSettings) must never clobber them. That
-        // snapshot is only a fallback for the never-configured (example) state.
-        let hasRealSettings = false;
+        const setBalBtn = document.getElementById('setBalBtn');
+        const riskInputs = document.getElementById('riskInputs');
+        const ctxLine = document.getElementById('ctxLine');
+        const deskScoreEl = document.getElementById('deskScoreEl');
+        let liveRiskPct = 0;      // risk% from saved settings (used when input blank)
+        let hasRealSettings = false; // saved /settings are the authority
+        let lastFloating = 0;     // unrealized $ P/L of open positions (from engine)
+        let brokerBalanceActive = false; // sizing off the broker account balance
         const riskInputFocused = () =>
             document.activeElement === acctEl || document.activeElement === riskEl;
 
         const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c =>
             ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c]));
 
-        // ---- Risk manager: account $ + risk % -> exact lot size per trade ----
-        // Persisted SERVER-SIDE (not just this browser) so the dashboard AND the
-        // email alerts recommend the same lot size everywhere, on any device.
-        // "account" (the input) = your last-set reference balance. "liveEquity" =
-        // the actual COMPOUNDING balance the engine grows/shrinks as trades close
-        // — like a real trading account. The balance readout shows liveEquity;
-        // typing in the Account box resets both (a deliberate "set my balance").
+        // ---- Balance & risk (MetaTrader semantics, NO example/fake numbers) ----
+        // Balance = closed P/L compounding. Equity = balance + floating P/L of
+        // open positions. When a demo broker is connected, the agents read ITS
+        // balance and size off it. Until a balance is set: signals-only.
         let liveEquity = 0;
         let startBalance = 0;
         acctEl.value = localStorage.getItem('acct') || '';
@@ -294,40 +286,43 @@
         }
         function updateRiskNote() {
             const { account, riskPct } = getRisk();
-            if (account > 0 && riskPct > 0 && usingDefaultBalance) {
-                riskNote.textContent = `Showing an example: risking $${(account * riskPct / 100).toFixed(2)} per trade ` +
-                    `(${riskPct}% of $${account}). Set your real account below to make this yours.`;
-            } else if (account > 0 && riskPct > 0) {
-                riskNote.textContent = `Risking $${(account * riskPct / 100).toFixed(2)} per trade (${riskPct}% of your current balance). Saved — used in emails too.`;
-            } else {
-                riskNote.textContent = 'Set your account & risk % — every signal, setup & email will show exact lot size.';
-            }
+            riskNote.textContent = (account > 0 && riskPct > 0)
+                ? `Risking $${(account * riskPct / 100).toFixed(2)} per trade (${riskPct}% of balance). Saved — used everywhere.`
+                : 'Enter account $ and risk % — the agents size every trade from it.';
         }
         function renderBalance() {
-            if (!(liveEquity > 0)) { balanceRow.style.display = 'none'; return; }
-            balanceRow.style.display = '';
-            balanceLabel.textContent = usingDefaultBalance ? '💰 Example Balance' : '💰 Live Balance';
-            balanceAmount.textContent = '$' + liveEquity.toFixed(2);
-            balanceAmount.className = 'balance-amount' + (usingDefaultBalance ? '' : liveEquity > startBalance ? ' up' : liveEquity < startBalance ? ' down' : '');
-            if (usingDefaultBalance) {
-                balanceDelta.textContent = 'Not your real account — set yours below to start tracking for real.';
+            if (!(liveEquity > 0)) {
+                balanceAmount.textContent = '—';
+                balanceAmount.className = 'balance-amount';
+                balanceDelta.textContent = 'no balance set — money simulation off, signals still run';
                 balanceDelta.className = 'balance-delta';
-            } else if (startBalance > 0) {
+                riskInputs.style.display = ''; // invite setup
+                return;
+            }
+            balanceLabel.textContent = brokerBalanceActive ? '💰 Balance (broker)' : '💰 Balance';
+            balanceAmount.textContent = '$' + liveEquity.toFixed(2);
+            balanceAmount.className = 'balance-amount' + (liveEquity > startBalance ? ' up' : liveEquity < startBalance ? ' down' : '');
+            const parts = [];
+            if (startBalance > 0) {
                 const diff = liveEquity - startBalance;
                 const pct = (diff / startBalance) * 100;
-                balanceDelta.textContent = `${diff >= 0 ? '+' : ''}$${diff.toFixed(2)} (${diff >= 0 ? '+' : ''}${pct.toFixed(1)}%) since $${startBalance.toFixed(2)} start`;
-                balanceDelta.className = 'balance-delta ' + (diff >= 0 ? 'pos' : 'neg');
-            } else {
-                balanceDelta.textContent = '';
+                parts.push(`${diff >= 0 ? '+' : ''}$${diff.toFixed(2)} (${diff >= 0 ? '+' : ''}${pct.toFixed(1)}%) since $${startBalance.toFixed(2)}`);
             }
+            if (lastFloating) {
+                parts.push(`equity $${(liveEquity + lastFloating).toFixed(2)} · floating ${lastFloating >= 0 ? '+' : ''}$${lastFloating.toFixed(2)}`);
+            }
+            balanceDelta.textContent = parts.join('  ·  ');
+            balanceDelta.className = 'balance-delta ' + ((liveEquity - startBalance) >= 0 ? 'pos' : 'neg');
         }
+        setBalBtn.addEventListener('click', () => {
+            riskInputs.style.display = riskInputs.style.display === 'none' ? '' : 'none';
+            if (riskInputs.style.display === '') acctEl.focus();
+        });
         let riskSaveTimer = null;
         function onRiskChange() {
             localStorage.setItem('acct', acctEl.value);
             localStorage.setItem('riskpct', riskEl.value);
             updateRiskNote();
-            load(); // re-render sizing immediately
-            // Debounce the server save while typing.
             clearTimeout(riskSaveTimer);
             riskSaveTimer = setTimeout(saveRiskToServer, 700);
         }
@@ -344,7 +339,6 @@
                 const s = await res.json();
                 if (s && s.equity != null) {
                     hasRealSettings = true;
-                    usingDefaultBalance = false; // a real manual save is never the placeholder
                     liveEquity = Number(s.equity);
                     liveRiskPct = Number(s.riskPct) || liveRiskPct;
                     startBalance = Number(s.account);
@@ -360,7 +354,6 @@
                 const s = await res.json();
                 if (s && s.account > 0 && s.riskPct > 0) {
                     hasRealSettings = true;
-                    usingDefaultBalance = false;
                     if (!riskInputFocused()) { // never clobber inputs mid-typing
                         acctEl.value = s.account;
                         riskEl.value = s.riskPct;
@@ -370,6 +363,7 @@
                     liveEquity = Number(s.equity) || Number(s.account);
                     liveRiskPct = Number(s.riskPct) || liveRiskPct;
                     startBalance = Number(s.account);
+                    riskInputs.style.display = 'none'; // configured — tuck the form away
                 }
             } catch (e) { /* use localStorage values already set */ }
             updateRiskNote();
@@ -579,20 +573,15 @@
                     ddB.style.display = 'none';
                 }
 
-                // Balance sync: the engine-run snapshot is ONLY a fallback for the
-                // never-configured (example) state. Once you have real saved
-                // settings, /settings is the authority (polled on the interval) —
-                // this stale snapshot must never overwrite your numbers. That was
-                // the bug where a saved $10 kept flipping back to the $1000 example.
-                if (!hasRealSettings && !riskInputFocused() &&
-                    data.riskSettings && data.riskSettings.equity != null) {
-                    usingDefaultBalance = !!data.riskSettings.isDefault;
-                    liveEquity = Number(data.riskSettings.equity);
-                    liveRiskPct = Number(data.riskSettings.riskPct) || liveRiskPct;
-                    startBalance = Number(data.riskSettings.account) || startBalance;
-                    renderBalance();
-                    updateRiskNote();
+                // MetaTrader-style money sync: floating P/L + broker-balance flag
+                // come from the engine each run. /settings stays the authority for
+                // the saved balance itself (polled on the interval).
+                lastFloating = Number(data.floating) || 0;
+                brokerBalanceActive = !!(data.riskSettings && data.riskSettings.brokerBalance);
+                if (brokerBalanceActive && data.riskSettings.equity > 0) {
+                    liveEquity = Number(data.riskSettings.equity); // broker is source of truth
                 }
+                renderBalance();
 
                 const all = data.signals || [];
                 const ok = all.filter(s => !s.error);
@@ -622,8 +611,8 @@
                 // Agent panel: broker status + day plan + playbook.
                 if (data.broker) {
                     brokerStatus.textContent = data.broker.enabled
-                        ? `🟢 OANDA practice account ACTIVE${data.broker.executed ? ` · ${data.broker.executed} action(s) last run` : ''}${data.broker.errors && data.broker.errors.length ? ` · ⚠ ${esc(data.broker.errors[0])}` : ''}`
-                        : 'paper mode — add OANDA practice keys to let it place demo trades itself';
+                        ? `🟢 broker: ${data.broker.name || 'demo'} ACTIVE${data.broker.executed ? ` · ${data.broker.executed} action(s) last run` : ''}${data.broker.errors && data.broker.errors.length ? ` · ⚠ ${data.broker.errors[0]}` : ''}`
+                        : 'broker: paper mode — connect your Exness MT5 demo (MetaApi keys) or OANDA practice to let the agents execute';
                 }
                 if (data.agent) {
                     if (data.agent.dayplan) {
@@ -637,6 +626,15 @@
                     }
                     if (data.agent.deskMax) {
                         deskBudget.textContent = `· ${data.agent.deskCallsToday || 0}/${data.agent.deskMax} convenings today`;
+                    }
+                    const ds = data.agent.deskScore;
+                    if (ds && (ds.vetoes || ds.taken)) {
+                        deskScoreEl.textContent = ` · record: ${ds.vetoes} vetoes ${ds.vetoSavedR >= 0 ? 'saved +' : 'cost '}${Math.abs(ds.vetoSavedR)}R, ${ds.taken} taken ${ds.takenR >= 0 ? '+' : ''}${ds.takenR}R`;
+                    }
+                    const cx = data.agent.context;
+                    if (cx && (cx.strength || cx.cot)) {
+                        ctxLine.style.display = '';
+                        ctxLine.textContent = `🌍 ${cx.strength ? '20h strength: ' + cx.strength : ''}${cx.strength && cx.cot ? '  ·  ' : ''}${cx.cot ? 'COT ' + cx.cot : ''}`;
                     }
                 }
                 renderDesk(data.deskLog);

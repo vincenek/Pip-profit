@@ -133,18 +133,79 @@ function usdSide(pair, direction) {
   return 0;
 }
 
+// ===========================================================================
+// MARKET CONTEXT — sentiment + fundamentals, all free:
+//   - COT: CFTC weekly Commitments of Traders (large-spec net positioning +
+//     week-over-week change) — what institutional money actually holds.
+//   - Currency strength: 20h relative momentum per currency from our candles.
+// Feeds the AGENTS' judgment (prompts) — NOT the deterministic gate, so the
+// backtested core stays exactly as measured.
+// ===========================================================================
+const COT_DATASET = process.env.COT_DATASET || "6dca-aqww"; // CFTC legacy futures-only (Socrata)
+const COT_MARKETS = { EUR: "EURO FX", GBP: "BRITISH POUND", JPY: "JAPANESE YEN" };
+
+async function getMarketContext(store, okBuilt) {
+  const ctx = { strength: null, cot: null };
+  // Currency strength (20 hourly bars) derived from our own price data.
+  try {
+    const moves = {};
+    for (const b of okBuilt) {
+      const c = b.snapshot._h1raw && b.snapshot._h1raw.closes;
+      if (!c || c.length < 21) continue;
+      const pct = ((c[c.length - 1] - c[c.length - 21]) / c[c.length - 21]) * 100;
+      const [base, quote] = b.pair.split("/");
+      (moves[base] = moves[base] || []).push(pct);
+      (moves[quote] = moves[quote] || []).push(-pct);
+    }
+    const rank = Object.entries(moves)
+      .map(([ccy, arr]) => [ccy, arr.reduce((a, x) => a + x, 0) / arr.length])
+      .sort((a, b) => b[1] - a[1]);
+    if (rank.length) {
+      ctx.strength = rank.map(([c, v]) => c + " " + (v >= 0 ? "+" : "") + v.toFixed(2) + "%").join("  ");
+    }
+  } catch (e) { /* strength is optional */ }
+
+  // COT positioning — cached 24h (the report itself is weekly).
+  try {
+    const cached = await store.get("cot", { type: "json" });
+    if (cached && Date.now() - cached.at < 24 * 3600000) {
+      ctx.cot = cached.line;
+      return ctx;
+    }
+    const parts = [];
+    for (const [ccy, market] of Object.entries(COT_MARKETS)) {
+      const url = "https://publicreporting.cftc.gov/resource/" + COT_DATASET +
+        ".json?$q=" + encodeURIComponent(market) +
+        "&$order=report_date_as_yyyy_mm_dd%20DESC&$limit=2";
+      const res = await fetch(url);
+      if (!res.ok) continue;
+      const rows = await res.json();
+      if (!Array.isArray(rows) || !rows.length) continue;
+      const net = (r) => Number(r.noncomm_positions_long_all || 0) - Number(r.noncomm_positions_short_all || 0);
+      const cur = net(rows[0]);
+      const wow = rows[1] ? cur - net(rows[1]) : 0;
+      parts.push(ccy + " net " + (cur >= 0 ? "+" : "") + Math.round(cur / 1000) + "k (" + (wow >= 0 ? "+" : "") + Math.round(wow / 1000) + "k wk)");
+    }
+    if (parts.length) {
+      ctx.cot = "large specs vs USD: " + parts.join(", ");
+      await store.setJSON("cot", { at: Date.now(), line: ctx.cot }).catch(() => {});
+    }
+  } catch (e) { console.warn("COT unavailable:", String(e).slice(0, 100)); }
+  return ctx;
+}
+
 // Pre-trade portfolio checks. Returns a human-readable block reason, or null.
 function portfolioBlock(record, ledger) {
   if (ledger.ddState && ledger.ddState.paused) {
     return "drawdown circuit-breaker active — new trades paused until equity recovers";
   }
-  if (ledger.open.length >= MAX_OPEN_TRADES) {
+  if (ledger.open.filter((o) => !o.shadow).length >= MAX_OPEN_TRADES) {
     return `max ${MAX_OPEN_TRADES} concurrent positions reached`;
   }
   const side = usdSide(record.pair, record.direction);
   if (side !== 0) {
     const same = [...ledger.open, ...(ledger.pending || [])]
-      .filter((x) => usdSide(x.pair, x.direction) === side).length;
+      .filter((x) => !x.shadow && usdSide(x.pair, x.direction) === side).length;
     if (same >= MAX_SAME_SIDE_USD) {
       return `USD correlation guard: already ${same} position${same === 1 ? "" : "s"} ${side > 0 ? "long" : "short"} USD — this would stack the same bet`;
     }
@@ -156,11 +217,6 @@ function portfolioBlock(record, ledger) {
 // system (dashboard AND emails) uses everywhere, not just a local display.
 const ACCOUNT_SIZE = Number(process.env.ACCOUNT_SIZE || 0);
 const RISK_PCT = Number(process.env.RISK_PCT || 0);
-// Built-in fallback so sizing/balance tracking is never just blank before you
-// configure your real numbers — clearly flagged (isDefault) so the dashboard
-// and emails can label it as an example, not your actual account.
-const DEFAULT_ACCOUNT = 1000;
-const DEFAULT_RISK_PCT = 1;
 
 async function getRiskSettings(store) {
   try {
@@ -170,15 +226,15 @@ async function getRiskSettings(store) {
       // compounding balance (starts equal to account, then grows/shrinks as trades
       // close) — this is what actually drives position sizing, like a real account.
       const equity = Number.isFinite(Number(s.equity)) && Number(s.equity) > 0 ? Number(s.equity) : Number(s.account);
-      return { account: Number(s.account), riskPct: Number(s.riskPct), equity };
+      return { account: Number(s.account), riskPct: Number(s.riskPct), equity, configured: true };
     }
   } catch (e) { /* fall through to defaults below */ }
   if (ACCOUNT_SIZE > 0 && RISK_PCT > 0) {
-    return { account: ACCOUNT_SIZE, riskPct: RISK_PCT, equity: ACCOUNT_SIZE };
+    return { account: ACCOUNT_SIZE, riskPct: RISK_PCT, equity: ACCOUNT_SIZE, configured: true };
   }
-  // Nothing configured anywhere (no saved settings, no env vars) — use a
-  // labeled example so sizing always shows something, not blank.
-  return { account: DEFAULT_ACCOUNT, riskPct: DEFAULT_RISK_PCT, equity: DEFAULT_ACCOUNT, isDefault: true };
+  // Nothing configured — NO fake example balance. The agents run signals-only
+  // (no $ sizing, no equity sim) until a real balance is set on the dashboard.
+  return { account: 0, riskPct: 0, equity: 0, configured: false };
 }
 
 // Standard-lot position size for the majors (X/USD and USD/X). Sized off the
@@ -231,6 +287,19 @@ exports.handler = async (event) => {
   // live (e.g. pair A's win funds pair B's position size later in the same run,
   // just like a real account). Persisted back to Blobs at the end of the run.
   const riskState = { ...riskSettings };
+
+  // If a demo broker is connected, ITS balance is the source of truth (exactly
+  // like MetaTrader): the agents read the account and size trades off it.
+  const routedEarly = brokerModule();
+  if (routedEarly.mod && routedEarly.mod.getBalance && riskSettings.configured) {
+    try {
+      const bal = await routedEarly.mod.getBalance();
+      if (bal && bal > 0) {
+        riskState.equity = bal;
+        riskState.brokerBalance = true; // dashboard labels the source
+      }
+    } catch (e) { console.warn("broker balance read failed:", String(e).slice(0, 120)); }
+  }
 
   // Economic calendar once for the whole run.
   const calendar = await getCalendar().catch((e) => {
@@ -291,17 +360,21 @@ exports.handler = async (event) => {
     })
   );
 
+  const okBuilt = built.filter((b) => !b.error);
+
+  // Sentiment + fundamentals context — one compact line for the agents.
+  const marketCtx = await getMarketContext(store, okBuilt).catch(() => ({ strength: null, cot: null }));
+
   // 2. ONE AI call — analyze ONLY the focus pairs for NEW signals; review ALL
   //    open trades; AND write journal lessons for trades that just closed —
   //    all in the same request (zero extra token cost for the learning loop).
-  const okBuilt = built.filter((b) => !b.error);
   const focusBuilt = okBuilt.filter((b) => b.isFocus);
   let signalByPair = {};
   let aiReviews = {};
   let aiError = null;
   if (marketOpen && (focusBuilt.length || ledger.open.length || justClosed.length)) {
     try {
-      const res = await analyzePairs(focusBuilt.map((b) => b.snapshot), perfFeedback, ledger.open, playbook, justClosed);
+      const res = await analyzePairs(focusBuilt.map((b) => b.snapshot), perfFeedback, ledger.open.filter((o) => !o.shadow), playbook, justClosed.filter((c) => !c.shadow), marketCtx);
       signalByPair = res.signals || {};
       aiReviews = res.reviews || {};
       // Attach lessons to the closed trades + append to the playbook's raw list
@@ -340,7 +413,7 @@ exports.handler = async (event) => {
       // are managed mechanically (TP1 partial + trail). Early-closing winners at
       // tiny +R was measurably destroying the edge.
       const unprotected = o.lockedR == null || o.lockedR < 0;
-      if (rv && rv.verdict === "close" && price && unprotected && currentR(o, price) < 0) {
+      if (!o.shadow && rv && rv.verdict === "close" && price && unprotected && currentR(o, price) < 0) {
         const r = realizedR(o, currentR(o, price)) - spreadRFor(o);
         const closedRec = realizePnl({
           ...o, closedAt: new Date().toISOString(),
@@ -362,7 +435,7 @@ exports.handler = async (event) => {
   //     Warn at -DD_WARN, pause NEW trades at -DD_PAUSE, auto-resume with
   //     hysteresis below -DD_RESUME. Open trades keep being managed throughout.
   ledger.ddState = ledger.ddState || { warned: false, paused: false };
-  if (!riskSettings.isDefault && riskState.account > 0) {
+  if (riskSettings.configured && riskState.account > 0) {
     const dd = 1 - riskState.equity / riskState.account;
     if (!ledger.ddState.paused && dd >= DD_PAUSE) {
       ledger.ddState.paused = true;
@@ -464,14 +537,20 @@ exports.handler = async (event) => {
       } else if ((record.qualityScore || 0) >= NOTIFY_MIN_SCORE) {
         // 🏛 THE DESK CONVENES — Analyst → Risk Manager → Head Trader deliberate
         // on this candidate. Only gated candidates reach here (a few per day).
-        const desk = await deskReview(record, b.snapshot, playbook, ledger, riskState);
+        const desk = await deskReview(record, b.snapshot, playbook, ledger, riskState, { ctx: marketCtx });
         record.desk = desk;
         if (desk.verdict === "veto") {
           record.risk_block = `Desk veto: ${desk.note || "risk objections upheld"}`;
+          // SHADOW-TRACK the veto: simulate the setup to completion (no alerts,
+          // no broker, no equity, no stats) so the desk can be GRADED on its
+          // vetoes — did saying no actually save money?
+          const sp = createPending(record, b.snapshot, ledger, true);
+          if (sp) sp.deskVerdict = "veto";
         } else {
           const p = createPending(record, b.snapshot, ledger);
           if (p) {
             p.deskMult = desk.verdict === "take_half" ? 0.5 : 1;
+            p.deskVerdict = desk.verdict;
             p.deskConviction = desk.conviction;
             p.deskNote = desk.note;
             justPending.push(p);
@@ -485,6 +564,20 @@ exports.handler = async (event) => {
           }
         }
       }
+    }
+  }
+
+  // DESK SCORE — the committee is graded on its own verdicts: a veto of a
+  // loser SAVED money (+|R|); a veto of a winner COST money (−R). Taken trades
+  // accumulate their realized R. This feeds back into future deliberations.
+  ledger.deskScore = ledger.deskScore || { vetoes: 0, vetoSavedR: 0, taken: 0, takenR: 0 };
+  for (const c of justClosed) {
+    if (c.shadow && c.deskVerdict === "veto") {
+      ledger.deskScore.vetoes++;
+      ledger.deskScore.vetoSavedR = Number((ledger.deskScore.vetoSavedR - (c.rMultiple || 0)).toFixed(2));
+    } else if (!c.shadow && (c.deskVerdict === "take" || c.deskVerdict === "take_half")) {
+      ledger.deskScore.taken++;
+      ledger.deskScore.takenR = Number((ledger.deskScore.takenR + (c.rMultiple || 0)).toFixed(2));
     }
   }
 
@@ -518,11 +611,24 @@ exports.handler = async (event) => {
   // where this one left off — only if risk tracking is actually configured (not
   // the unlabeled fallback default — that stays a pure example, never saved,
   // until you set your own numbers on the dashboard).
-  if (!riskSettings.isDefault && riskState.account > 0 && riskState.riskPct > 0 && riskState.equity !== riskSettings.equity) {
+  if (riskSettings.configured && riskState.account > 0 && riskState.riskPct > 0 && riskState.equity !== riskSettings.equity) {
     await store.setJSON("settings", {
       account: riskState.account, riskPct: riskState.riskPct, equity: riskState.equity,
       updatedAt: new Date().toISOString(),
     }).catch((e) => console.warn("failed to persist equity:", String(e)));
+  }
+
+  // FLOATING P/L (MetaTrader semantics): unrealized $ across open positions at
+  // the latest prices. Equity-with-floating = balance + this number.
+  let floatingPnl = 0;
+  {
+    const px = {};
+    for (const b of okBuilt) px[b.pair] = b.snapshot.price;
+    for (const o of ledger.open) {
+      if (o.shadow || o.riskAmt == null || !px[o.pair]) continue;
+      floatingPnl += realizedR(o, currentR(o, px[o.pair])) * o.riskAmt;
+    }
+    floatingPnl = Number(floatingPnl.toFixed(2));
   }
 
   await store.setJSON("ledger", ledger);
@@ -532,6 +638,7 @@ exports.handler = async (event) => {
     // JSON bodies are where things after it risk getting lost in transit/tooling.
     generatedAt: new Date().toISOString(),
     riskSettings: riskState,        // account $ / risk % / LIVE equity driving position sizing
+    floating: floatingPnl,           // unrealized $ P/L of open positions (MetaTrader-style)
     broker,                          // OANDA practice execution status (enabled/executed/errors)
     agent: {                         // the agent's mind, for the dashboard
       principles: (playbook.principles || []).slice(0, 8),
@@ -539,6 +646,8 @@ exports.handler = async (event) => {
       dayplanAt: dayplan ? dayplan.generatedAt : null,
       deskCallsToday: ledger.deskCalls ? ledger.deskCalls.count : 0,
       deskMax: DESK_MAX_PER_DAY,
+      deskScore: ledger.deskScore || null,
+      context: marketCtx,
     },
     deskLog: await mergeDeskLog(store), // recent committee deliberations (own blob key)
     drawdown: {
@@ -548,10 +657,10 @@ exports.handler = async (event) => {
     },
     stats: ledger.stats,
     calibration: ledger.stats, // historical hit-rate the dashboard surfaces
-    open: ledger.open,              // currently tracked trades (for duration)
-    pending: ledger.pending,        // setups waiting for a pullback entry
+    open: ledger.open.filter((o) => !o.shadow), // real positions (shadows stay internal)
+    pending: ledger.pending.filter((p) => !p.shadow), // real setups awaiting pullback
     signals,
-    history: ledger.closed, // ALL resolved trades — nothing hidden — LAST
+    history: ledger.closed.filter((c) => !c.shadow), // ALL real resolved trades — LAST
   });
 
   console.log(
@@ -1004,7 +1113,7 @@ function evaluateOpenSignals(pair, snapshot, ledger, justClosed, manageAlerts, r
       ledger.closed.unshift(closedRec);
       if (justClosed) justClosed.push(closedRec);
       // Broker: its own SL/TP usually closed this already — belt-and-braces.
-      bq("close", { open: o });
+      if (!o.shadow) bq("close", { open: o });
       continue;
     }
 
@@ -1021,17 +1130,17 @@ function evaluateOpenSignals(pair, snapshot, ledger, justClosed, manageAlerts, r
       }, riskState);
       ledger.closed.unshift(closedRec);
       if (justClosed) justClosed.push(closedRec);
-      if (manageAlerts) manageAlerts.push({ ...action, pair: o.pair, direction: o.direction, entry: o.entry });
-      bq("close", { open: o }); // execute the early close at the broker too
+      if (manageAlerts && !o.shadow) manageAlerts.push({ ...action, pair: o.pair, direction: o.direction, entry: o.entry });
+      if (!o.shadow) bq("close", { open: o }); // execute the early close at the broker too
       continue; // removed from open
     }
-    if (action && action.type === "partial") {
+    if (action && action.type === "partial" && !o.shadow) {
       bq("partial", { open: o }); // bank half + stop to breakeven at the broker
     }
-    if (action && action.type === "trail") {
+    if (action && action.type === "trail" && !o.shadow) {
       bq("trail", { open: o, newStop: action.newStop }); // move the broker stop
     }
-    if (action && (action.type === "trail" || action.type === "partial") && manageAlerts) {
+    if (action && (action.type === "trail" || action.type === "partial") && manageAlerts && !o.shadow) {
       manageAlerts.push({ ...action, pair: o.pair, direction: o.direction, entry: o.entry });
     }
     still.push(o);
@@ -1188,7 +1297,7 @@ function gradeWithTrailing(o, raw) {
 }
 
 function recomputeStats(ledger) {
-  const closed = ledger.closed;
+  const closed = ledger.closed.filter((c) => !c.shadow);
   const wins = closed.filter((c) => c.outcome === "win").length;
   const losses = closed.filter((c) => c.outcome === "loss").length;
   const scratch = closed.filter((c) => c.outcome === "scratch").length;
@@ -1200,7 +1309,7 @@ function recomputeStats(ledger) {
     wins,
     losses,
     scratch,
-    open: ledger.open.length,
+    open: ledger.open.filter((o) => !o.shadow).length,
     winRate: decisive ? Math.round((wins / decisive) * 100) : 0,
     totalR: Number(totalR.toFixed(2)),
     avgR: total ? Number((totalR / total).toFixed(2)) : 0,
@@ -1211,6 +1320,7 @@ function recomputeStats(ledger) {
 function calibrationByPair(ledger) {
   const out = {};
   for (const c of ledger.closed) {
+    if (c.shadow) continue; // shadow simulations never shape calibration
     const k = c.pair;
     out[k] = out[k] || { wins: 0, total: 0 };
     out[k].total++;
@@ -1225,7 +1335,7 @@ function calibrationByPair(ledger) {
 // Plain-language results summary fed back into the AI prompt so it ADAPTS —
 // gets stricter where it's losing, leans into what's working.
 function performanceFeedback(ledger) {
-  const closed = ledger.closed;
+  const closed = ledger.closed.filter((c) => !c.shadow);
   if (!closed.length) return "No closed trades yet — no performance history to learn from.";
   const byPair = {};
   for (const c of closed) {
@@ -1288,17 +1398,18 @@ function applyComputedLevels(sig, s) {
 const PULLBACK_ATR = Number(process.env.PULLBACK_ATR || 0.5);     // how deep a pullback to wait for
 const ENTRY_WINDOW_HOURS = Number(process.env.ENTRY_WINDOW_HOURS || 6); // setup validity
 
-function createPending(record, snapshot, ledger) {
+function createPending(record, snapshot, ledger, shadow) {
   const dir = record.direction;
   if (dir !== "buy" && dir !== "sell") return null;
   if ((record.qualityScore || 0) < NOTIFY_MIN_SCORE) return null;
+  shadow = !!shadow; // shadow = veto shadow-tracking: simulated silently, never traded
   // ANTI-STACKING: don't open a second bet on the same pair+direction while one
   // is already active (open or waiting to trigger). This is what allows
   // "multiple trades per pair" (a genuine reversal, or a new trade after the
   // last one closed) WITHOUT letting the engine restack the identical call
   // every 30-60 min during a sustained trend (was inflating trade counts).
-  if ((ledger.pending || []).some((p) => p.pair === record.pair && p.direction === record.direction)) return null;
-  if ((ledger.open || []).some((o) => o.pair === record.pair && o.direction === record.direction)) return null;
+  if ((ledger.pending || []).some((p) => p.pair === record.pair && p.direction === record.direction && !!p.shadow === shadow)) return null;
+  if ((ledger.open || []).some((o) => o.pair === record.pair && o.direction === record.direction && !!o.shadow === shadow)) return null;
 
   const buy = dir === "buy";
   const price = snapshot.price;
@@ -1309,6 +1420,7 @@ function createPending(record, snapshot, ledger) {
 
   const p = {
     id: `${keyFor(record.pair)}-P-${Date.now()}`,
+    shadow,
     pair: record.pair,
     direction: dir,
     entryZone,
@@ -1357,7 +1469,8 @@ function checkPending(pair, snapshot, ledger, justEntered, cancelled, riskState)
       // Lock in the $ size NOW, off the current live equity — a real account
       // doesn't resize a position after it's opened, so this never changes again.
       // The desk's take_half verdict scales the money risk (not the R tracking).
-      const psRaw = positionSize(lv.entry, lv.sl, pair, riskState);
+      // Shadow (vetoed) setups get NO money sizing — pure R simulation.
+      const psRaw = p.shadow ? null : positionSize(lv.entry, lv.sl, pair, riskState);
       const dm = p.deskMult || 1;
       const ps = psRaw ? { ...psRaw, riskAmt: psRaw.riskAmt * dm, lots: psRaw.lots * dm, units: psRaw.units * dm } : null;
       const o = {
@@ -1372,13 +1485,17 @@ function checkPending(pair, snapshot, ledger, justEntered, cancelled, riskState)
         riskAmt: ps ? ps.riskAmt : null,
         sizeLots: ps ? ps.lots : null,
         deskMult: dm,
+        shadow: !!p.shadow,
+        deskVerdict: p.deskVerdict || null,
         equityAtOpen: riskState ? riskState.equity : null,
       };
       // Carry the broker order id across so we can find the filled trade.
       if (p.oandaOrderId) o.oandaOrderId = p.oandaOrderId;
       ledger.open.push(o);
-      if (justEntered) justEntered.push(o);
-      bq("resolve", { open: o }); // locate the filled OANDA trade for this position
+      if (!o.shadow) {
+        if (justEntered) justEntered.push(o);
+        bq("resolve", { open: o }); // locate the filled broker trade
+      }
       continue; // removed from pending
     }
 
@@ -1450,9 +1567,12 @@ async function deskReview(record, s, playbook, ledger, riskState, opts = {}) {
     const pb = (playbook && playbook.principles || []).slice(0, 8).map((p) => "- " + p).join("\n");
 
     // 1) 📈 ANALYST — build the case.
+    const ctxLine = opts.ctx && (opts.ctx.strength || opts.ctx.cot)
+      ? `CONTEXT: ${opts.ctx.strength || ""}${opts.ctx.cot ? " · COT " + opts.ctx.cot : ""}\n`
+      : "";
     const analyst = await callAI(
       `You are the ANALYST on an FX desk. Build the honest case for this proposal from the data line only.\n` +
-      `PROPOSAL: ${dir} ${record.pair} (quality score ${record.qualityScore}).\nDATA: ${pairLine}\n` +
+      `PROPOSAL: ${dir} ${record.pair} (quality score ${record.qualityScore}).\nDATA: ${pairLine}\n` + ctxLine +
       (pb ? `PLAYBOOK (your desk's learned principles):\n${pb}\n` : "") +
       `Return ONLY JSON {"thesis":"<=50 words","strength":0-100,"invalidation":"<=15 words"}`,
       { type: "OBJECT", properties: { thesis: STR, strength: NUM, invalidation: STR }, required: ["thesis", "strength"] },
@@ -1464,8 +1584,12 @@ async function deskReview(record, s, playbook, ledger, riskState, opts = {}) {
     const openBook = ledger.open.map((o) => `${o.pair} ${o.direction}`).join("; ") || "flat";
     const dd = riskState && riskState.account > 0 ? Math.round((1 - riskState.equity / riskState.account) * 1000) / 10 : 0;
     const ev = (s.events || []).slice(0, 3).map((e) => `${e.impact} ${e.country} ${e.title} in ${e.minutesAway}min`).join("; ") || "none";
+    const dsc = ledger.deskScore || null;
+    const deskRecord = dsc && (dsc.vetoes || dsc.taken)
+      ? `YOUR DESK RECORD: ${dsc.vetoes} vetoes shadow-graded ${dsc.vetoSavedR >= 0 ? "SAVED +" : "COST "}${Math.abs(dsc.vetoSavedR)}R; ${dsc.taken} taken trades netted ${dsc.takenR >= 0 ? "+" : ""}${dsc.takenR}R. If vetoes are costing R, be less trigger-happy; if saving, keep the bar high.\n`
+      : "";
     const risk = await callAI(
-      `You are the RISK MANAGER on an FX desk. Your job is to ATTACK this proposal — find the real reasons NOT to take it. No rubber-stamping; if the objections are weak, say approve.\n` +
+      deskRecord + `You are the RISK MANAGER on an FX desk. Your job is to ATTACK this proposal — find the real reasons NOT to take it. No rubber-stamping; if the objections are weak, say approve.\n` +
       `PROPOSAL: ${dir} ${record.pair} q${record.qualityScore}.\nANALYST CASE (strength ${analyst.strength}): ${analyst.thesis}\n` +
       `PORTFOLIO: open [${openBook}] · last 5 outcomes [${last5}] · drawdown ${dd}%\nUPCOMING EVENTS: ${ev}\n` +
       `Return ONLY JSON {"objections":["<=15 words each, max 3"],"severity":"low|medium|high","recommendation":"approve|reduce|veto"}`,
@@ -1580,7 +1704,7 @@ function perPairBlock(s) {
   );
 }
 
-async function analyzePairs(snapshots, perfFeedback, openTrades = [], playbook = null, justClosed = []) {
+async function analyzePairs(snapshots, perfFeedback, openTrades = [], playbook = null, justClosed = [], marketCtx = null) {
   const blocks = snapshots.map(perPairBlock).join("\n");
   const openBlock = openTrades.length
     ? `\nOPEN POSITIONS — review each (hold or close). The desk manages exits ` +
@@ -1610,10 +1734,16 @@ async function analyzePairs(snapshots, perfFeedback, openTrades = [], playbook =
         `${c.outcome} ${c.rMultiple}R exit:${c.exit} peak:+${c.peakR || 0}R`
       ).join("\n") + "\n"
     : "";
+  const ctxBlock = marketCtx && (marketCtx.strength || marketCtx.cot)
+    ? `MARKET CONTEXT (sentiment/fundamentals — weigh, do not override structure):\n` +
+      (marketCtx.strength ? `- 20h currency strength: ${marketCtx.strength}\n` : "") +
+      (marketCtx.cot ? `- COT ${marketCtx.cot}\n` : "") + "\n"
+    : "";
   const prompt =
     `You are a senior FX analyst on a rules-based desk. For EACH pair below, decide ` +
     `the single highest-probability trade from the computed indicators ONLY, and ` +
     `return one signal object per pair (include its "pair").\n\n` +
+    ctxBlock +
     (perfFeedback ? `PERFORMANCE FEEDBACK (learn from your own results):\n${perfFeedback}\n\n` : "") +
     playbookBlock + openBlock + closedBlock + "\n" +
     `Your priority: PRECISION over quantity. Only output buy/sell when the setup is ` +
@@ -1974,6 +2104,7 @@ async function dispatchAlerts(events, ledger = null, riskSettings = null) {
     }
   }
   for (const c of closed) {
+    if (c.shadow) continue; // vetoed shadow simulations resolve silently
     const icon = c.outcome === "win" ? "✅ WIN" : c.outcome === "loss" ? "❌ LOSS" : "⚪ SCRATCH";
     const rtxt = `${c.rMultiple > 0 ? "+" : ""}${c.rMultiple}R`;
     const ex = c.exit || "";

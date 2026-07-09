@@ -148,4 +148,13 @@ async function execute(queue) {
   return { enabled: true, executed, errors };
 }
 
-module.exports = { enabled, execute, _helpers: { symbol, unitsToLots, px, base } };
+// The demo account's actual balance — when connected, the agents size trades
+// off THIS (the broker is the source of truth, exactly like MetaTrader).
+async function getBalance() {
+  if (!enabled()) return null;
+  const r = await api("GET", "/accountInformation");
+  const bal = Number(r && r.balance);
+  return Number.isFinite(bal) && bal > 0 ? bal : null;
+}
+
+module.exports = { enabled, execute, getBalance, _helpers: { symbol, unitsToLots, px, base } };
