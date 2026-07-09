@@ -60,10 +60,21 @@ function bq(type, payload) { brokerQueue.push({ type, ...payload }); }
 // Desk deliberations produced during this run — merged into the standalone
 // "desklog" blob (its own key so nothing else can clobber it).
 let deskNewEntries = [];
+
+// Read a JSON blob preferring strong consistency, but NEVER let an unsupported
+// consistency option kill the run — fall back to a normal (eventual) read.
+async function getJSON(store, key) {
+  try {
+    return await store.get(key, { type: "json", consistency: "strong" });
+  } catch (e) {
+    try { return await store.get(key, { type: "json" }); } catch (e2) { return null; }
+  }
+}
+
 async function mergeDeskLog(store) {
   let log = [];
   try {
-    log = (await store.get("desklog", { type: "json", consistency: "strong" })) || [];
+    log = (await getJSON(store, "desklog")) || [];
   } catch (e) { /* first run or read hiccup — start fresh */ }
   if (deskNewEntries.length) {
     log = log.concat(deskNewEntries).slice(-10);
@@ -228,7 +239,7 @@ exports.handler = async (event) => {
   });
 
   // Existing ledger (track record) we will update as signals resolve.
-  const ledger = (await store.get("ledger", { type: "json", consistency: "strong" })) || {
+  const ledger = (await getJSON(store, "ledger")) || {
     open: [],
     closed: [],
     stats: emptyStats(),
@@ -2046,7 +2057,7 @@ exports.recomputeStats = recomputeStats;
 exports.deskTest = async () => {
   const store = getStore("signals");
   deskNewEntries = []; // fresh collector for this invocation
-  const ledger = (await store.get("ledger", { type: "json", consistency: "strong" })) || { open: [], closed: [], pending: [] };
+  const ledger = (await getJSON(store, "ledger")) || { open: [], closed: [], pending: [] };
   const playbook = (await store.get("playbook", { type: "json" })) || { principles: [], lessons: [] };
   const riskSettings = await getRiskSettings(store);
   const calendar = await getCalendar().catch(() => []);
