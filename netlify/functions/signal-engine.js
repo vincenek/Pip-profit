@@ -1455,7 +1455,8 @@ async function deskReview(record, s, playbook, ledger, riskState, opts = {}) {
       `PROPOSAL: ${dir} ${record.pair} (quality score ${record.qualityScore}).\nDATA: ${pairLine}\n` +
       (pb ? `PLAYBOOK (your desk's learned principles):\n${pb}\n` : "") +
       `Return ONLY JSON {"thesis":"<=50 words","strength":0-100,"invalidation":"<=15 words"}`,
-      { type: "OBJECT", properties: { thesis: STR, strength: NUM, invalidation: STR }, required: ["thesis", "strength"] }
+      { type: "OBJECT", properties: { thesis: STR, strength: NUM, invalidation: STR }, required: ["thesis", "strength"] },
+      { maxTokens: 450 }
     );
 
     // 2) 🛡 RISK MANAGER — attack the trade.
@@ -1476,7 +1477,8 @@ async function deskReview(record, s, playbook, ledger, riskState, opts = {}) {
           recommendation: { type: "STRING", enum: ["approve", "reduce", "veto"] },
         },
         required: ["severity", "recommendation"],
-      }
+      },
+      { maxTokens: 450 }
     );
 
     // 3) 👔 HEAD TRADER — conclude.
@@ -1496,7 +1498,8 @@ async function deskReview(record, s, playbook, ledger, riskState, opts = {}) {
           note: STR,
         },
         required: ["verdict", "conviction"],
-      }
+      },
+      { maxTokens: 300 }
     );
 
     const verdict = ["take", "take_half", "veto"].includes(trader.verdict) ? trader.verdict : "take";
@@ -1751,15 +1754,21 @@ async function critiqueSignals(items) {
 
 // Provider router — Groq if a key is set (generous free tier), else Gemini.
 // RESILIENCE: if the primary (70B) model hits its rate/daily-token limit, the
-// agent auto-retries on the 8B model (5x larger budget) instead of going dark.
-async function callAI(prompt, responseSchema) {
+// agent falls back to 8B (5x larger budget) — and REMEMBERS the downgrade for
+// 30 min so later calls stop paying the 429-then-retry double tax (which was
+// pushing multi-call runs past the 10s function timeout).
+let groqDowngradeUntil = 0;
+async function callAI(prompt, responseSchema, opts = {}) {
+  const maxTokens = opts.maxTokens || 2000;
   if (process.env.GROQ_API_KEY) {
+    const primary = Date.now() < groqDowngradeUntil ? "llama-3.1-8b-instant" : GROQ_MODEL;
     try {
-      return await callGroq(prompt, GROQ_MODEL);
+      return await callGroq(prompt, primary, maxTokens);
     } catch (err) {
-      if (String(err).includes("429") && GROQ_MODEL !== "llama-3.1-8b-instant") {
-        console.warn("Groq 70B rate-limited — falling back to 8B for this run");
-        return await callGroq(prompt, "llama-3.1-8b-instant");
+      if (String(err).includes("429") && primary !== "llama-3.1-8b-instant") {
+        groqDowngradeUntil = Date.now() + 30 * 60000;
+        console.warn("Groq 70B rate-limited — sticky-downgrading to 8B for 30 min");
+        return await callGroq(prompt, "llama-3.1-8b-instant", maxTokens);
       }
       throw err;
     }
@@ -1767,7 +1776,7 @@ async function callAI(prompt, responseSchema) {
   return callGemini(prompt, responseSchema);
 }
 
-async function callGroq(prompt, model) {
+async function callGroq(prompt, model, maxTokens) {
   const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
     method: "POST",
     headers: {
@@ -1781,7 +1790,7 @@ async function callGroq(prompt, model) {
       temperature: 0.3,
       // Groq free tier counts prompt + max_tokens against the 6k/min limit, so
       // keep this modest — the compact JSON response fits well under 2k.
-      max_tokens: 2000,
+      max_tokens: maxTokens || 2000,
     }),
   });
   if (!res.ok) throw new Error(`Groq API ${res.status}: ${await res.text()}`);
