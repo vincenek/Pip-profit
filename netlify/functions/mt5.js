@@ -174,4 +174,16 @@ async function describe() {
   };
 }
 
-module.exports = { enabled, execute, getBalance, describe, _helpers: { symbol, unitsToLots, px, base } };
+// Deploy the account (spins up the cloud terminal that logs into the broker).
+// Used to self-heal when describe() reports UNDEPLOYED.
+async function deploy() {
+  if (!enabled()) return false;
+  const res = await fetch(
+    `https://mt-provisioning-api-v1.agiliumtrade.agiliumtrade.ai/users/current/accounts/${process.env.META_API_ACCOUNT_ID}/deploy`,
+    { method: "POST", headers: { "auth-token": process.env.META_API_TOKEN } }
+  );
+  if (!res.ok && res.status !== 204) throw new Error(`deploy ${res.status}: ${(await res.text()).slice(0, 200)}`);
+  return true;
+}
+
+module.exports = { enabled, execute, getBalance, describe, deploy, _helpers: { symbol, unitsToLots, px, base } };

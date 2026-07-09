@@ -2211,6 +2211,12 @@ exports.brokerTest = async () => {
   const out = { broker: routed.name };
   try {
     if (routed.mod.describe) out.account = await routed.mod.describe();
+    // Self-heal: an added-but-never-deployed account just needs a deploy kick.
+    if (out.account && out.account.state === "UNDEPLOYED" && routed.mod.deploy) {
+      await routed.mod.deploy();
+      out.deployTriggered = true;
+      out.note = "account was UNDEPLOYED — deployment initiated; connecting to the broker takes ~1-2 minutes, then re-run this test";
+    }
   } catch (err) { out.describeError = String(err).slice(0, 200); }
   try {
     const balance = await routed.mod.getBalance();
