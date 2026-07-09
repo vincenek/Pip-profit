@@ -2208,12 +2208,19 @@ exports.brokerTest = async () => {
   if (!routed.mod) {
     return { broker: "paper", note: "no broker env vars armed (MT5 needs META_API_TOKEN + META_API_ACCOUNT_ID + MT5_CONFIRM_DEMO=yes)" };
   }
+  const out = { broker: routed.name };
+  try {
+    if (routed.mod.describe) out.account = await routed.mod.describe();
+  } catch (err) { out.describeError = String(err).slice(0, 200); }
   try {
     const balance = await routed.mod.getBalance();
-    return { broker: routed.name, connected: balance != null, balance };
+    out.connected = balance != null;
+    out.balance = balance;
   } catch (err) {
-    return { broker: routed.name, connected: false, error: String(err).slice(0, 300) };
+    out.connected = false;
+    out.error = String(err).slice(0, 300);
   }
+  return out;
 };
 
 // DESK TEST — convene the committee on live data RIGHT NOW (run-now?desktest=1)

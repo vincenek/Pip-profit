@@ -157,4 +157,21 @@ async function getBalance() {
   return Number.isFinite(bal) && bal > 0 ? bal : null;
 }
 
-module.exports = { enabled, execute, getBalance, _helpers: { symbol, unitsToLots, px, base } };
+// Account state straight from MetaApi provisioning — the diagnosis endpoint:
+// is the account DEPLOYED? CONNECTED to Exness? Which region is it actually in?
+async function describe() {
+  if (!enabled()) return null;
+  const res = await fetch(
+    `https://mt-provisioning-api-v1.agiliumtrade.agiliumtrade.ai/users/current/accounts/${process.env.META_API_ACCOUNT_ID}`,
+    { headers: { "auth-token": process.env.META_API_TOKEN } }
+  );
+  if (!res.ok) throw new Error(`provisioning ${res.status}: ${(await res.text()).slice(0, 200)}`);
+  const a = await res.json();
+  return {
+    name: a.name, login: a.login, server: a.server,
+    state: a.state, connectionStatus: a.connectionStatus,
+    region: a.region, reliability: a.reliability, type: a.type,
+  };
+}
+
+module.exports = { enabled, execute, getBalance, describe, _helpers: { symbol, unitsToLots, px, base } };
