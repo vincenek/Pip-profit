@@ -40,10 +40,20 @@
 
 const { getStore, connectLambda } = require("@netlify/blobs");
 const oanda = require("./oanda.js");
+const mt5 = require("./mt5.js");
+
+// BROKER ROUTER — the engine emits generic intents; whichever executor has its
+// env keys set carries them out. MT5 (Exness demo via MetaApi) takes priority,
+// then OANDA practice; with neither configured the system stays paper-only.
+function brokerModule() {
+  if (mt5.enabled()) return { name: "Exness MT5 demo", mod: mt5 };
+  if (oanda.enabled()) return { name: "OANDA practice", mod: oanda };
+  return { name: "paper", mod: null };
+}
 
 // BROKER ACTION QUEUE — sync strategy code enqueues intents (place/cancel/
-// partial/trail/close); they execute against the OANDA practice account in one
-// async pass at the end of the run. Dormant unless OANDA env vars are set.
+// partial/trail/close); they execute against the demo broker in one async
+// pass at the end of the run. Dormant unless a broker's env vars are set.
 let brokerQueue = [];
 function bq(type, payload) { brokerQueue.push({ type, ...payload }); }
 
@@ -419,16 +429,27 @@ exports.handler = async (event) => {
       const blocked = portfolioBlock(record, ledger);
       if (blocked) {
         record.risk_block = blocked; // surfaced on the dashboard card
-      } else {
-        const p = createPending(record, b.snapshot, ledger);
-        if (p) {
-          justPending.push(p);
-          // Mirror the setup as a real LIMIT order on the practice account —
-          // signed units from the live risk sizing.
-          const ps = positionSize(p.entryZone, p.estSl, p.pair, riskState);
-          if (ps) {
-            const units = Math.max(1, Math.round(ps.units)) * (p.direction === "buy" ? 1 : -1);
-            bq("place", { pending: p, units });
+      } else if ((record.qualityScore || 0) >= NOTIFY_MIN_SCORE) {
+        // 🏛 THE DESK CONVENES — Analyst → Risk Manager → Head Trader deliberate
+        // on this candidate. Only gated candidates reach here (a few per day).
+        const desk = await deskReview(record, b.snapshot, playbook, ledger, riskState);
+        record.desk = desk;
+        if (desk.verdict === "veto") {
+          record.risk_block = `Desk veto: ${desk.note || "risk objections upheld"}`;
+        } else {
+          const p = createPending(record, b.snapshot, ledger);
+          if (p) {
+            p.deskMult = desk.verdict === "take_half" ? 0.5 : 1;
+            p.deskConviction = desk.conviction;
+            p.deskNote = desk.note;
+            justPending.push(p);
+            // Mirror the setup as a real LIMIT order at the demo broker —
+            // signed units from live risk sizing × the desk's size verdict.
+            const ps = positionSize(p.entryZone, p.estSl, p.pair, riskState);
+            if (ps) {
+              const units = Math.max(1, Math.round(ps.units * p.deskMult)) * (p.direction === "buy" ? 1 : -1);
+              bq("place", { pending: p, units });
+            }
           }
         }
       }
@@ -445,16 +466,20 @@ exports.handler = async (event) => {
     riskState
   );
 
-  // BROKER EXECUTION — mirror this run's decisions onto the OANDA practice
-  // account (dormant without env keys). Runs BEFORE ledger persistence so the
-  // order/trade ids it writes onto pending/open objects are saved.
-  let broker = { enabled: oanda.enabled(), executed: 0, errors: [] };
-  try {
-    broker = await oanda.execute(brokerQueue);
-    if (broker.errors.length) console.warn("broker errors:", broker.errors.join(" | "));
-  } catch (e) {
-    broker.errors.push(String(e).slice(0, 160));
-    console.warn("broker execute failed:", String(e));
+  // BROKER EXECUTION — mirror this run's decisions onto the configured demo
+  // broker (MT5/Exness via MetaApi, or OANDA practice; dormant without keys).
+  // Runs BEFORE ledger persistence so the ids it writes onto objects are saved.
+  const routed = brokerModule();
+  let broker = { name: routed.name, enabled: !!routed.mod, executed: 0, errors: [] };
+  if (routed.mod) {
+    try {
+      const r = await routed.mod.execute(brokerQueue);
+      broker = { name: routed.name, ...r };
+      if (broker.errors.length) console.warn("broker errors:", broker.errors.join(" | "));
+    } catch (e) {
+      broker.errors.push(String(e).slice(0, 160));
+      console.warn("broker execute failed:", String(e));
+    }
   }
 
   // Persist the compounded equity so the NEXT run (and the dashboard) picks up
@@ -480,7 +505,10 @@ exports.handler = async (event) => {
       principles: (playbook.principles || []).slice(0, 8),
       dayplan: dayplan ? dayplan.text : null,
       dayplanAt: dayplan ? dayplan.generatedAt : null,
+      deskCallsToday: ledger.deskCalls ? ledger.deskCalls.count : 0,
+      deskMax: DESK_MAX_PER_DAY,
     },
+    deskLog: ledger.deskLog || [],   // recent committee deliberations (visualized)
     drawdown: {
       paused: !!(ledger.ddState && ledger.ddState.paused),
       warned: !!(ledger.ddState && ledger.ddState.warned),
@@ -1296,7 +1324,10 @@ function checkPending(pair, snapshot, ledger, justEntered, cancelled, riskState)
       const lv = computeLevels(p.entryZone, buy, snapshot);
       // Lock in the $ size NOW, off the current live equity — a real account
       // doesn't resize a position after it's opened, so this never changes again.
-      const ps = positionSize(lv.entry, lv.sl, pair, riskState);
+      // The desk's take_half verdict scales the money risk (not the R tracking).
+      const psRaw = positionSize(lv.entry, lv.sl, pair, riskState);
+      const dm = p.deskMult || 1;
+      const ps = psRaw ? { ...psRaw, riskAmt: psRaw.riskAmt * dm, lots: psRaw.lots * dm, units: psRaw.units * dm } : null;
       const o = {
         id: `${keyFor(pair)}-${Date.now()}`,
         pair, direction: p.direction,
@@ -1308,6 +1339,7 @@ function checkPending(pair, snapshot, ledger, justEntered, cancelled, riskState)
         viaPullback: true,
         riskAmt: ps ? ps.riskAmt : null,
         sizeLots: ps ? ps.lots : null,
+        deskMult: dm,
         equityAtOpen: riskState ? riskState.equity : null,
       };
       // Carry the broker order id across so we can find the filled trade.
@@ -1357,6 +1389,111 @@ function validateSignal(sig, s) {
 // ===========================================================================
 const NUM = { type: "NUMBER" };
 const STR = { type: "STRING" };
+
+// ===========================================================================
+// THE DESK — a three-agent committee that convenes ONLY when a candidate setup
+// has already passed the quality gate + portfolio guards (a few times a day at
+// most, so it fits the free token budget). Analyst builds the case, Risk
+// Manager attacks it, Head Trader concludes: take / take_half / veto.
+// Everything is stored so the dashboard can SHOW the deliberation.
+// ===========================================================================
+const DESK_MAX_PER_DAY = Number(process.env.DESK_MAX_PER_DAY || 8);
+
+async function deskReview(record, s, playbook, ledger, riskState, opts = {}) {
+  // Budget: cap convenings per UTC day (test deliberations don't count).
+  const today = new Date().toISOString().slice(0, 10);
+  if (!ledger.deskCalls || ledger.deskCalls.date !== today) {
+    ledger.deskCalls = { date: today, count: 0 };
+  }
+  if (!opts.test) {
+    if (ledger.deskCalls.count >= DESK_MAX_PER_DAY) {
+      return { verdict: "take", conviction: record.confidence || 60, note: "desk capped today — gate-only approval", capped: true };
+    }
+    ledger.deskCalls.count++;
+  }
+
+  try {
+    const dir = record.direction.toUpperCase();
+    const pairLine = perPairBlock(s);
+    const pb = (playbook && playbook.principles || []).slice(0, 8).map((p) => "- " + p).join("\n");
+
+    // 1) 📈 ANALYST — build the case.
+    const analyst = await callAI(
+      `You are the ANALYST on an FX desk. Build the honest case for this proposal from the data line only.\n` +
+      `PROPOSAL: ${dir} ${record.pair} (quality score ${record.qualityScore}).\nDATA: ${pairLine}\n` +
+      (pb ? `PLAYBOOK (your desk's learned principles):\n${pb}\n` : "") +
+      `Return ONLY JSON {"thesis":"<=50 words","strength":0-100,"invalidation":"<=15 words"}`,
+      { type: "OBJECT", properties: { thesis: STR, strength: NUM, invalidation: STR }, required: ["thesis", "strength"] }
+    );
+
+    // 2) 🛡 RISK MANAGER — attack the trade.
+    const last5 = ledger.closed.slice(0, 5).map((c) => c.outcome).join(",") || "none yet";
+    const openBook = ledger.open.map((o) => `${o.pair} ${o.direction}`).join("; ") || "flat";
+    const dd = riskState && riskState.account > 0 ? Math.round((1 - riskState.equity / riskState.account) * 1000) / 10 : 0;
+    const ev = (s.events || []).slice(0, 3).map((e) => `${e.impact} ${e.country} ${e.title} in ${e.minutesAway}min`).join("; ") || "none";
+    const risk = await callAI(
+      `You are the RISK MANAGER on an FX desk. Your job is to ATTACK this proposal — find the real reasons NOT to take it. No rubber-stamping; if the objections are weak, say approve.\n` +
+      `PROPOSAL: ${dir} ${record.pair} q${record.qualityScore}.\nANALYST CASE (strength ${analyst.strength}): ${analyst.thesis}\n` +
+      `PORTFOLIO: open [${openBook}] · last 5 outcomes [${last5}] · drawdown ${dd}%\nUPCOMING EVENTS: ${ev}\n` +
+      `Return ONLY JSON {"objections":["<=15 words each, max 3"],"severity":"low|medium|high","recommendation":"approve|reduce|veto"}`,
+      {
+        type: "OBJECT",
+        properties: {
+          objections: { type: "ARRAY", items: STR },
+          severity: { type: "STRING", enum: ["low", "medium", "high"] },
+          recommendation: { type: "STRING", enum: ["approve", "reduce", "veto"] },
+        },
+        required: ["severity", "recommendation"],
+      }
+    );
+
+    // 3) 👔 HEAD TRADER — conclude.
+    const trader = await callAI(
+      `You are the HEAD TRADER on an FX desk. Conclude on this proposal — you have final authority.\n` +
+      `PROPOSAL: ${dir} ${record.pair} q${record.qualityScore}\n` +
+      `ANALYST (strength ${analyst.strength}): ${analyst.thesis}\n` +
+      `RISK MANAGER (severity ${risk.severity}, recommends ${risk.recommendation}): ${(risk.objections || []).join("; ") || "no material objections"}\n` +
+      `Rules: honour a credible high-severity objection with veto; medium severity usually means take_half; ` +
+      `low severity with a strong thesis means take. Be decisive — no hedging.\n` +
+      `Return ONLY JSON {"verdict":"take|take_half|veto","conviction":0-100,"note":"<=25 words"}`,
+      {
+        type: "OBJECT",
+        properties: {
+          verdict: { type: "STRING", enum: ["take", "take_half", "veto"] },
+          conviction: NUM,
+          note: STR,
+        },
+        required: ["verdict", "conviction"],
+      }
+    );
+
+    const verdict = ["take", "take_half", "veto"].includes(trader.verdict) ? trader.verdict : "take";
+    const desk = {
+      verdict,
+      conviction: Math.max(0, Math.min(100, Number(trader.conviction) || 50)),
+      note: String(trader.note || "").slice(0, 160),
+      analyst: {
+        thesis: String(analyst.thesis || "").slice(0, 240),
+        strength: Math.max(0, Math.min(100, Number(analyst.strength) || 0)),
+        invalidation: String(analyst.invalidation || "").slice(0, 90),
+      },
+      risk: {
+        severity: risk.severity,
+        recommendation: risk.recommendation,
+        objections: (risk.objections || []).slice(0, 3).map((x) => String(x).slice(0, 90)),
+      },
+    };
+    // Deliberation log — the dashboard renders the agents from this.
+    ledger.deskLog = (ledger.deskLog || []).concat([{
+      when: new Date().toISOString(), pair: record.pair, direction: record.direction,
+      quality: record.qualityScore, test: !!opts.test, ...desk,
+    }]).slice(-10);
+    return desk;
+  } catch (err) {
+    console.warn("desk unavailable:", String(err).slice(0, 120));
+    return { verdict: "take", conviction: record.confidence || 60, note: "desk unavailable — gate-only approval", fallback: true };
+  }
+}
 const SIGNAL_PROPS = {
   pair: STR,
   direction: { type: "STRING", enum: ["buy", "sell", "no_trade"] },
@@ -1711,11 +1848,11 @@ async function dispatchAlerts(events, ledger = null, riskSettings = null) {
   const sent = new Set((ledger && ledger.sentAlerts) || []);
   const items = []; // { key, text }
 
-  const sizeLineFor = (entry, stop, pair) => {
+  const sizeLineFor = (entry, stop, pair, mult) => {
     const ps = positionSize(entry, stop, pair, riskSettings);
-    return ps
-      ? `\n📐 Size: ${ps.lots.toFixed(2)} lots (${Math.round(ps.units).toLocaleString()} units) · risk $${ps.riskAmt.toFixed(2)} · ${ps.pips.toFixed(0)} pips`
-      : "";
+    if (!ps) return "";
+    const m = mult || 1;
+    return `\n📐 Size: ${(ps.lots * m).toFixed(2)} lots (${Math.round(ps.units * m).toLocaleString()} units) · risk $${(ps.riskAmt * m).toFixed(2)} · ${ps.pips.toFixed(0)} pips`;
   };
 
   // ENTER NOW — a pending setup pulled back to its level and triggered.
@@ -1725,7 +1862,7 @@ async function dispatchAlerts(events, ledger = null, riskSettings = null) {
       key: `ENT:${o.id}`,
       text:
         `${arrow} ${o.pair} NOW @ ${o.entry}  (score ${o.qualityScore})\n` +
-        `Stop ${o.sl}\nTP1 ${o.tp1}   TP2 ${o.tp2}\nR:R 1:1.8 · ${o.timeframe || ""}${sizeLineFor(o.entry, o.sl, o.pair)}\n` +
+        `Stop ${o.sl}\nTP1 ${o.tp1}   TP2 ${o.tp2}\nR:R 1:1.8 · ${o.timeframe || ""}${sizeLineFor(o.entry, o.sl, o.pair, o.deskMult)}\n` +
         `Plan: bank HALF at TP1 → stop to breakeven → runner to TP2 (I'll email each step).\n` +
         `Price pulled back to the level — place the trade now.`,
     });
@@ -1737,8 +1874,9 @@ async function dispatchAlerts(events, ledger = null, riskSettings = null) {
       key: `PEN:${p.id}`,
       text:
         `${arrow} ${p.pair}  (score ${p.qualityScore})\n` +
+        (p.deskNote ? `🏛 Desk verdict: ${p.deskMult === 0.5 ? "TAKE HALF SIZE" : "TAKE"} (${p.deskConviction || "?"}% conviction) — ${p.deskNote}\n` : "") +
         `Waiting for a pullback to ~${p.entryZone} to enter (valid ${ENTRY_WINDOW_HOURS}h). ` +
-        `I'll email you the moment it triggers.${sizeLineFor(p.entryZone, p.estSl, p.pair)}\n${p.reasoning || p.headline || ""}`,
+        `I'll email you the moment it triggers.${sizeLineFor(p.entryZone, p.estSl, p.pair, p.deskMult)}\n${p.reasoning || p.headline || ""}`,
     });
   }
   // SETUP cancelled.
@@ -1878,6 +2016,30 @@ async function sendEmail(subject, text) {
 // Exposed for one-off maintenance tools (e.g. run-now?cleanupWeekend=1).
 exports.forexMarketOpen = forexMarketOpen;
 exports.recomputeStats = recomputeStats;
+
+// DESK TEST — convene the committee on live data RIGHT NOW (run-now?desktest=1)
+// so the deliberation is visible on demand. Doesn't trade, doesn't count against
+// the desk's daily budget; the deliberation is logged (flagged test) for the UI.
+exports.deskTest = async () => {
+  const store = getStore("signals");
+  const ledger = (await store.get("ledger", { type: "json" })) || { open: [], closed: [], pending: [] };
+  const playbook = (await store.get("playbook", { type: "json" })) || { principles: [], lessons: [] };
+  const riskSettings = await getRiskSettings(store);
+  const calendar = await getCalendar().catch(() => []);
+  const pair = PAIRS[0];
+  const snapshot = await buildSnapshot(pair, calendar);
+  const direction = snapshot.biasScore >= 0 ? "buy" : "sell"; // test on the leaning side
+  const record = {
+    pair, direction, confidence: 65,
+    qualityScore: qualityScore(snapshot, { direction, confidence: 65 }, { total: 0 }),
+  };
+  const desk = await deskReview(record, snapshot, playbook, ledger, riskSettings, { test: true });
+  await store.setJSON("ledger", ledger); // persist the deskLog entry
+  const latest = (await store.get("latest", { type: "json" })) || {};
+  latest.deskLog = ledger.deskLog || [];
+  await store.setJSON("latest", latest);
+  return { pair, direction, quality: record.qualityScore, desk };
+};
 
 // STRATEGY CORE — exported so backtest.js replays the EXACT code the live
 // engine trades with (no reimplementation drift; institutional requirement).

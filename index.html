@@ -100,6 +100,16 @@
         .risk-box .risk-note { font-size:.78rem; color:var(--muted); display:block; margin-top:8px; }
         .sizing { color:var(--green); font-weight:700; }
         .show-more { display:block; margin:10px auto 0; background:var(--panel2); border:1px solid var(--line); color:var(--muted); border-radius:8px; padding:8px 18px; font:inherit; font-size:.8rem; cursor:pointer; }
+        .desk-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(215px,1fr)); gap:10px; margin-top:10px; }
+        .agent-card { background:var(--panel2); border:1px solid var(--line); border-radius:10px; padding:10px 12px; font-size:.8rem; line-height:1.45; }
+        .agent-card h4 { margin:0 0 6px; font-size:.78rem; letter-spacing:.03em; }
+        .meter { height:6px; background:var(--line); border-radius:4px; overflow:hidden; margin:6px 0; }
+        .meter i { display:block; height:100%; background:var(--blue); }
+        .verdict { display:inline-block; font-weight:800; font-size:.7rem; padding:3px 10px; border-radius:999px; }
+        .verdict.take { background:var(--green); color:#04101a; }
+        .verdict.take_half { background:var(--amber); color:#1a1204; }
+        .verdict.veto { background:var(--red); color:#fff; }
+        .desk-row { display:flex; gap:8px 14px; flex-wrap:wrap; align-items:center; padding:6px 0; border-bottom:1px solid var(--line); font-size:.76rem; color:var(--muted); }
         .lesson { flex-basis:100%; font-size:.76rem; color:var(--muted); font-style:italic; }
         .dd-banner { background:#3a0d0d; border:1px solid var(--red); color:#fecaca; border-radius:12px; padding:12px 16px; margin-bottom:14px; font-weight:600; }
         .dd-banner.warn { background:#3a2a07; border-color:#5c4310; color:#fde68a; }
@@ -162,6 +172,18 @@
                 <summary class="risk-note" style="cursor:pointer; margin-top:0;">📖 Playbook — principles it learned from its own trades</summary>
                 <ul id="playbookList" style="font-size:.83rem; margin:6px 0 0 18px;"></ul>
             </details>
+            <div id="deskPanel" style="margin-top:10px; border-top:1px solid var(--line); padding-top:10px;">
+                <div class="risk-inputs" style="justify-content:space-between; width:100%;">
+                    <span class="risk-note" style="margin-top:0;"><b>🏛 The Desk</b> — 📈 Analyst · 🛡 Risk Manager · 👔 Head Trader <span id="deskBudget"></span></span>
+                    <button id="deskTestBtn">Convene the desk now</button>
+                </div>
+                <div id="deskLatest"></div>
+                <details id="deskHistWrap" style="display:none; margin-top:8px;">
+                    <summary class="risk-note" style="cursor:pointer; margin-top:0;">Previous deliberations</summary>
+                    <div id="deskHistory"></div>
+                </details>
+            </div>
+
             <details style="margin-top:8px;">
                 <summary class="risk-note" style="cursor:pointer; margin-top:0;">🧪 Backtest — replay the exact live strategy over ~5 months (spread charged)</summary>
                 <div class="risk-inputs" style="margin-top:8px;">
@@ -227,6 +249,11 @@
         const dayplanWhen = document.getElementById('dayplanWhen');
         const playbookBox = document.getElementById('playbookBox');
         const playbookList = document.getElementById('playbookList');
+        const deskBudget = document.getElementById('deskBudget');
+        const deskTestBtn = document.getElementById('deskTestBtn');
+        const deskLatest = document.getElementById('deskLatest');
+        const deskHistWrap = document.getElementById('deskHistWrap');
+        const deskHistory = document.getElementById('deskHistory');
         let showAllHist = false;
         const acctEl = document.getElementById('acct');
         const riskEl = document.getElementById('riskpct');
@@ -444,6 +471,7 @@
                     ${sizingLine(s.entry_price ?? s.entry, s.stop_loss_price ?? s.stop_loss, s.pair)}
                     <div class="reason"><b>Why:</b> ${esc(s.technical_reasoning)}</div>
                     ${s.invalidation ? `<div class="reason"><b>Invalidation:</b> ${esc(s.invalidation)}</div>` : ''}
+                    ${s.desk ? `<div class="reason"><b>🏛 Desk:</b> <span class="verdict ${esc(s.desk.verdict)}">${s.desk.verdict === 'take_half' ? 'TAKE HALF' : esc((s.desk.verdict || '').toUpperCase())}</span> ${esc(s.desk.conviction || 0)}% — ${esc(s.desk.note || '')}</div>` : ''}
                     ${s.concerns ? `<div class="reason" style="opacity:.85;color:var(--amber);"><b>AI self-check:</b> ${esc(s.concerns)}</div>` : ''}
                     ${s.news_risk ? `<div class="reason" style="opacity:.8;"><b>News:</b> ${esc(s.news_risk)}</div>` : ''}`;
             }
@@ -607,7 +635,11 @@
                         playbookBox.style.display = '';
                         playbookList.innerHTML = data.agent.principles.map(p => `<li>${esc(p)}</li>`).join('');
                     }
+                    if (data.agent.deskMax) {
+                        deskBudget.textContent = `· ${data.agent.deskCallsToday || 0}/${data.agent.deskMax} convenings today`;
+                    }
                 }
+                renderDesk(data.deskLog);
 
                 statusEl.textContent = 'updated ' + new Date().toLocaleTimeString();
             } catch (e) {
@@ -616,6 +648,57 @@
         }
 
         histMore.addEventListener('click', () => { showAllHist = !showAllHist; load(); });
+
+        // ---- 🏛 The Desk: render the agents' deliberation ----
+        function agentCard(icon, title, inner) {
+            return `<div class="agent-card"><h4>${icon} ${title}</h4>${inner}</div>`;
+        }
+        function renderDesk(log) {
+            const dl = log || [];
+            if (!dl.length) {
+                deskLatest.innerHTML = '<div class="risk-note">No deliberations yet — the desk convenes automatically when a setup passes the quality gate, or press the button to watch it work right now.</div>';
+                deskHistWrap.style.display = 'none';
+                return;
+            }
+            const d = dl[dl.length - 1];
+            const vlbl = d.verdict === 'take_half' ? 'TAKE HALF SIZE' : (d.verdict || '').toUpperCase();
+            const a = d.analyst || {}; const rk = d.risk || {};
+            deskLatest.innerHTML =
+                `<div class="risk-note" style="margin-top:8px;">${d.test ? '🧪 test deliberation · ' : ''}` +
+                `<b>${esc(d.pair)} ${esc((d.direction || '').toUpperCase())}</b> · quality ${esc(d.quality)} · ${esc(new Date(d.when).toLocaleString())}</div>` +
+                `<div class="desk-grid">` +
+                agentCard('📈', 'Analyst',
+                    `<div class="meter"><i style="width:${a.strength || 0}%"></i></div>` +
+                    `case strength ${esc(a.strength || 0)}%<div style="margin-top:4px;">${esc(a.thesis || '—')}</div>` +
+                    (a.invalidation ? `<div class="risk-note">what kills it: ${esc(a.invalidation)}</div>` : '')) +
+                agentCard('🛡', 'Risk Manager',
+                    `severity <b>${esc(rk.severity || '—')}</b> · recommends <b>${esc(rk.recommendation || '—')}</b>` +
+                    (rk.objections && rk.objections.length
+                        ? `<ul style="margin:6px 0 0 16px;">${rk.objections.map(o => `<li>${esc(o)}</li>`).join('')}</ul>`
+                        : '<div class="risk-note">no material objections</div>')) +
+                agentCard('👔', 'Head Trader',
+                    `<span class="verdict ${esc(d.verdict)}">${esc(vlbl)}</span>` +
+                    `<div class="meter"><i style="width:${d.conviction || 0}%"></i></div>` +
+                    `conviction ${esc(d.conviction || 0)}%<div style="margin-top:4px;">${esc(d.note || '')}</div>`) +
+                `</div>`;
+            const prev = dl.slice(0, -1).reverse().slice(0, 6);
+            deskHistWrap.style.display = prev.length ? '' : 'none';
+            deskHistory.innerHTML = prev.map(x =>
+                `<div class="desk-row"><span>${esc(new Date(x.when).toLocaleString())}</span>` +
+                `<span><b>${esc(x.pair)} ${esc((x.direction || '').toUpperCase())}</b></span>` +
+                `<span class="verdict ${esc(x.verdict)}">${x.verdict === 'take_half' ? 'HALF' : esc((x.verdict || '').toUpperCase())}</span>` +
+                `<span>${esc(x.conviction || 0)}%</span>${x.test ? '<span>🧪</span>' : ''}</div>`).join('');
+        }
+        deskTestBtn.addEventListener('click', async () => {
+            deskTestBtn.disabled = true;
+            deskTestBtn.textContent = 'Deliberating… (~15s)';
+            try {
+                await fetch('/.netlify/functions/run-now?desktest=1', { cache: 'no-store' });
+                await load();
+            } catch (e) { /* surfaced on next load */ }
+            deskTestBtn.disabled = false;
+            deskTestBtn.textContent = 'Convene the desk now';
+        });
 
         runBtn.addEventListener('click', async () => {
             runBtn.disabled = true;

@@ -138,6 +138,17 @@ exports.handler = async (event) => {
     }
   }
 
+  // ?desktest=1 → convene the Desk Committee on live data right now (visible
+  // deliberation, no trade, doesn't consume the desk's daily budget).
+  if (qs && (qs.desktest === "1" || qs.desktest === "true")) {
+    try {
+      const result = await engine.deskTest();
+      return { statusCode: 200, headers, body: JSON.stringify({ desktest: true, ...result }, null, 2) };
+    } catch (err) {
+      return { statusCode: 500, headers, body: JSON.stringify({ error: String(err) }, null, 2) };
+    }
+  }
+
   // ?test=1 → just verify notification channels (no engine run, no quota used).
   if (qs && (qs.test === "1" || qs.test === "true")) {
     try {
