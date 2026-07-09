@@ -445,6 +445,11 @@ exports.handler = async (event) => {
       const blocked = portfolioBlock(record, ledger);
       if (blocked) {
         record.risk_block = blocked; // surfaced on the dashboard card
+      } else if ((record.qualityScore || 0) >= NOTIFY_MIN_SCORE && event && event.manualRun) {
+        // Manual (Run now) invocations have a 10s budget — too tight for a
+        // 3-agent deliberation. Defer to the next scheduled run (<=30 min),
+        // which has 30s: every taken trade still gets desk-reviewed.
+        record.risk_block = "🏛 desk review at the next scheduled run (within 30 min)";
       } else if ((record.qualityScore || 0) >= NOTIFY_MIN_SCORE) {
         // 🏛 THE DESK CONVENES — Analyst → Risk Manager → Head Trader deliberate
         // on this candidate. Only gated candidates reach here (a few per day).

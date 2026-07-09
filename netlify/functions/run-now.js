@@ -160,13 +160,28 @@ exports.handler = async (event) => {
   }
 
   try {
-    // Run the full engine pipeline (fetch -> indicators -> news -> Gemini -> grade -> save).
-    const result = await engine.handler(event || {});
+    // Run the full engine pipeline. manualRun: desk deliberations defer to the
+    // scheduled run (30s budget) — this endpoint only has ~10s, and returning
+    // the FULL latest blob here (250+ trade history) was blowing that budget.
+    const result = await engine.handler({ ...(event || {}), manualRun: true });
 
-    // Read back what it just saved so you see signals in this same response.
-    let latest = null;
+    // Compact read-back — the dashboard reloads get-signal itself anyway.
+    let summary = null;
     try {
-      latest = await getStore("signals").get("latest", { type: "json" });
+      const latest = await getStore("signals").get("latest", { type: "json" });
+      if (latest) {
+        summary = {
+          generatedAt: latest.generatedAt,
+          stats: latest.stats,
+          open: (latest.open || []).length,
+          pending: (latest.pending || []).length,
+          broker: latest.broker,
+          signals: (latest.signals || []).map((s) => ({
+            pair: s.pair, direction: s.direction, qualityScore: s.qualityScore,
+            error: s.error, risk_block: s.risk_block,
+          })),
+        };
+      }
     } catch (e) {
       /* blobs may be empty if the engine errored before saving */
     }
@@ -179,7 +194,7 @@ exports.handler = async (event) => {
           triggered: true,
           engineStatus: result && result.statusCode,
           engineResult: safeParse(result && result.body),
-          latest,
+          latest: summary,
         },
         null,
         2
