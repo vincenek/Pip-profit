@@ -39,6 +39,13 @@
 // ---------------------------------------------------------------------------
 
 const { getStore, connectLambda } = require("@netlify/blobs");
+const oanda = require("./oanda.js");
+
+// BROKER ACTION QUEUE — sync strategy code enqueues intents (place/cancel/
+// partial/trail/close); they execute against the OANDA practice account in one
+// async pass at the end of the run. Dormant unless OANDA env vars are set.
+let brokerQueue = [];
+function bq(type, payload) { brokerQueue.push({ type, ...payload }); }
 
 const PAIRS = (process.env.SIGNAL_PAIRS || "EUR/USD,GBP/USD,USD/JPY")
   .split(",")
@@ -180,6 +187,7 @@ exports.handler = async (event) => {
   // Lambda-compat functions must wire up Blobs from the event before getStore().
   try { if (event && event.blobs) connectLambda(event); } catch (e) { /* noop */ }
 
+  brokerQueue = []; // fresh queue per run (lambda containers get reused)
   const store = getStore("signals");
   const riskSettings = await getRiskSettings(store); // account $ + risk % (dashboard-set or env fallback)
   // Mutable copy — trades closing DURING this run compound into riskState.equity
@@ -205,6 +213,11 @@ exports.handler = async (event) => {
   // and per-pair calibration so the quality score reflects where it actually wins.
   const perfFeedback = performanceFeedback(ledger);
   const byPairStats = calibrationByPair(ledger);
+
+  // AGENT MEMORY: the playbook — distilled lessons from its own closed trades,
+  // injected into every decision. Rewritten/curated by the daily deep-think.
+  const playbook = (await store.get("playbook", { type: "json" })) || { principles: [], lessons: [] };
+  const dayplan = (await store.get("dayplan", { type: "json" })) || null; // morning deep-think output
 
   const justClosed = [];     // trades resolved this run (for result alerts)
   const manageAlerts = [];   // open trades turning bad / hitting +1R (exit mgmt)
@@ -241,18 +254,36 @@ exports.handler = async (event) => {
     })
   );
 
-  // 2. ONE AI call — analyze ONLY the focus pairs for NEW signals; but let the AI
-  //    review ALL open trades (incl. non-focus) so it can close any of them.
+  // 2. ONE AI call — analyze ONLY the focus pairs for NEW signals; review ALL
+  //    open trades; AND write journal lessons for trades that just closed —
+  //    all in the same request (zero extra token cost for the learning loop).
   const okBuilt = built.filter((b) => !b.error);
   const focusBuilt = okBuilt.filter((b) => b.isFocus);
   let signalByPair = {};
   let aiReviews = {};
   let aiError = null;
-  if (marketOpen && (focusBuilt.length || ledger.open.length)) {
+  if (marketOpen && (focusBuilt.length || ledger.open.length || justClosed.length)) {
     try {
-      const res = await analyzePairs(focusBuilt.map((b) => b.snapshot), perfFeedback, ledger.open);
+      const res = await analyzePairs(focusBuilt.map((b) => b.snapshot), perfFeedback, ledger.open, playbook, justClosed);
       signalByPair = res.signals || {};
       aiReviews = res.reviews || {};
+      // Attach lessons to the closed trades + append to the playbook's raw list
+      // (the daily deep-think distills these into standing principles).
+      for (const ls of res.lessons || []) {
+        const rec = justClosed.find((c) => c.id === ls.id) ||
+          justClosed[Number(ls.id)] || null;
+        if (rec && ls.lesson) {
+          rec.lesson = String(ls.lesson).slice(0, 240);
+          playbook.lessons.push({
+            when: rec.closedAt, pair: rec.pair, direction: rec.direction,
+            outcome: rec.outcome, r: rec.rMultiple, lesson: rec.lesson,
+          });
+        }
+      }
+      if (res.lessons && res.lessons.length) {
+        playbook.lessons = playbook.lessons.slice(-30); // keep the recent raw set
+        await store.setJSON("playbook", playbook).catch(() => {});
+      }
     } catch (err) {
       aiError = String(err);
       console.error("AI batch failed:", aiError);
@@ -282,6 +313,7 @@ exports.handler = async (event) => {
         ledger.closed.unshift(closedRec);
         justClosed.push(closedRec);
         manageAlerts.push({ type: "close", pair: o.pair, direction: o.direction, entry: o.entry, reason: `AI review: ${rv.reason}`, rNow: r });
+        bq("close", { open: o }); // execute the AI-judged close at the broker
       } else {
         stillOpen.push(o);
       }
@@ -380,6 +412,7 @@ exports.handler = async (event) => {
       if (opp) {
         ledger.pending = ledger.pending.filter((p) => p !== opp);
         cancelledSetups.push({ ...opp, reason: "signal flipped direction" });
+        bq("cancel", { pending: opp }); // pull the broker's pending order too
       }
       // PORTFOLIO GUARDS — institutional pre-trade checks (drawdown pause,
       // concurrent-position cap, correlated-USD-exposure cap).
@@ -388,7 +421,16 @@ exports.handler = async (event) => {
         record.risk_block = blocked; // surfaced on the dashboard card
       } else {
         const p = createPending(record, b.snapshot, ledger);
-        if (p) justPending.push(p);
+        if (p) {
+          justPending.push(p);
+          // Mirror the setup as a real LIMIT order on the practice account —
+          // signed units from the live risk sizing.
+          const ps = positionSize(p.entryZone, p.estSl, p.pair, riskState);
+          if (ps) {
+            const units = Math.max(1, Math.round(ps.units)) * (p.direction === "buy" ? 1 : -1);
+            bq("place", { pending: p, units });
+          }
+        }
       }
     }
   }
@@ -402,6 +444,18 @@ exports.handler = async (event) => {
     ledger,
     riskState
   );
+
+  // BROKER EXECUTION — mirror this run's decisions onto the OANDA practice
+  // account (dormant without env keys). Runs BEFORE ledger persistence so the
+  // order/trade ids it writes onto pending/open objects are saved.
+  let broker = { enabled: oanda.enabled(), executed: 0, errors: [] };
+  try {
+    broker = await oanda.execute(brokerQueue);
+    if (broker.errors.length) console.warn("broker errors:", broker.errors.join(" | "));
+  } catch (e) {
+    broker.errors.push(String(e).slice(0, 160));
+    console.warn("broker execute failed:", String(e));
+  }
 
   // Persist the compounded equity so the NEXT run (and the dashboard) picks up
   // where this one left off — only if risk tracking is actually configured (not
@@ -421,6 +475,12 @@ exports.handler = async (event) => {
     // JSON bodies are where things after it risk getting lost in transit/tooling.
     generatedAt: new Date().toISOString(),
     riskSettings: riskState,        // account $ / risk % / LIVE equity driving position sizing
+    broker,                          // OANDA practice execution status (enabled/executed/errors)
+    agent: {                         // the agent's mind, for the dashboard
+      principles: (playbook.principles || []).slice(0, 8),
+      dayplan: dayplan ? dayplan.text : null,
+      dayplanAt: dayplan ? dayplan.generatedAt : null,
+    },
     drawdown: {
       paused: !!(ledger.ddState && ledger.ddState.paused),
       warned: !!(ledger.ddState && ledger.ddState.warned),
@@ -883,6 +943,8 @@ function evaluateOpenSignals(pair, snapshot, ledger, justClosed, manageAlerts, r
       const closedRec = realizePnl({ ...o, ...graded, closedAt: new Date().toISOString() }, riskState);
       ledger.closed.unshift(closedRec);
       if (justClosed) justClosed.push(closedRec);
+      // Broker: its own SL/TP usually closed this already — belt-and-braces.
+      bq("close", { open: o });
       continue;
     }
 
@@ -900,9 +962,16 @@ function evaluateOpenSignals(pair, snapshot, ledger, justClosed, manageAlerts, r
       ledger.closed.unshift(closedRec);
       if (justClosed) justClosed.push(closedRec);
       if (manageAlerts) manageAlerts.push({ ...action, pair: o.pair, direction: o.direction, entry: o.entry });
+      bq("close", { open: o }); // execute the early close at the broker too
       continue; // removed from open
     }
-    if (action && action.type === "trail" && manageAlerts) {
+    if (action && action.type === "partial") {
+      bq("partial", { open: o }); // bank half + stop to breakeven at the broker
+    }
+    if (action && action.type === "trail") {
+      bq("trail", { open: o, newStop: action.newStop }); // move the broker stop
+    }
+    if (action && (action.type === "trail" || action.type === "partial") && manageAlerts) {
       manageAlerts.push({ ...action, pair: o.pair, direction: o.direction, entry: o.entry });
     }
     still.push(o);
@@ -1184,6 +1253,8 @@ function createPending(record, snapshot, ledger) {
     direction: dir,
     entryZone,
     estSl: estLevels.sl,
+    estTp1: estLevels.tp1,
+    estTp2: estLevels.tp2,
     refPrice: price,
     qualityScore: record.qualityScore,
     timeframe: record.timeframe,
@@ -1239,13 +1310,17 @@ function checkPending(pair, snapshot, ledger, justEntered, cancelled, riskState)
         sizeLots: ps ? ps.lots : null,
         equityAtOpen: riskState ? riskState.equity : null,
       };
+      // Carry the broker order id across so we can find the filled trade.
+      if (p.oandaOrderId) o.oandaOrderId = p.oandaOrderId;
       ledger.open.push(o);
       if (justEntered) justEntered.push(o);
+      bq("resolve", { open: o }); // locate the filled OANDA trade for this position
       continue; // removed from pending
     }
 
     if (Date.now() > p.expiresAt) {
       if (cancelled) cancelled.push({ ...p, reason: "no pullback within " + ENTRY_WINDOW_HOURS + "h" });
+      bq("cancel", { pending: p }); // GTD would expire anyway; cancel is belt-and-braces
       continue; // expired, dropped
     }
     keep.push(p);
@@ -1331,7 +1406,7 @@ function perPairBlock(s) {
   );
 }
 
-async function analyzePairs(snapshots, perfFeedback, openTrades = []) {
+async function analyzePairs(snapshots, perfFeedback, openTrades = [], playbook = null, justClosed = []) {
   const blocks = snapshots.map(perPairBlock).join("\n");
   const openBlock = openTrades.length
     ? `\nOPEN POSITIONS — review each (hold or close). The desk manages exits ` +
@@ -1346,12 +1421,27 @@ async function analyzePairs(snapshots, perfFeedback, openTrades = []) {
         `stage ${o.stage} peak +${o.peakR}R`
       ).join("\n") + "\n"
     : "";
+  // AGENT PLAYBOOK — standing principles distilled from its own trade history.
+  const playbookBlock = playbook && playbook.principles && playbook.principles.length
+    ? `\nYOUR PLAYBOOK (principles you learned from your own past trades — apply them):\n- ` +
+      playbook.principles.slice(0, 8).join("\n- ") + "\n"
+    : "";
+  // JOURNAL — trades that just closed; write one honest lesson each.
+  const closedBlock = justClosed.length
+    ? `\nJUST-CLOSED TRADES — for EACH, write ONE short honest lesson (max 25 words: ` +
+      `what the setup was and why it worked/failed; no platitudes). Return in "lessons" ` +
+      `keyed by id.\n` +
+      justClosed.map((c) =>
+        `id:${c.id} ${c.pair} ${String(c.direction).toUpperCase()} q${c.qualityScore} ` +
+        `${c.outcome} ${c.rMultiple}R exit:${c.exit} peak:+${c.peakR || 0}R`
+      ).join("\n") + "\n"
+    : "";
   const prompt =
     `You are a senior FX analyst on a rules-based desk. For EACH pair below, decide ` +
     `the single highest-probability trade from the computed indicators ONLY, and ` +
     `return one signal object per pair (include its "pair").\n\n` +
     (perfFeedback ? `PERFORMANCE FEEDBACK (learn from your own results):\n${perfFeedback}\n\n` : "") +
-    openBlock + "\n" +
+    playbookBlock + openBlock + closedBlock + "\n" +
     `Your priority: PRECISION over quantity. Only output buy/sell when the setup is ` +
     `genuinely high-probability — otherwise no_trade. A missed trade costs nothing; a ` +
     `bad trade costs money.\n\n` +
@@ -1383,6 +1473,9 @@ async function analyzePairs(snapshots, perfFeedback, openTrades = []) {
     (openTrades.length
       ? `,"reviews":[{"pair":"EUR/USD","verdict":"hold|close","reason":""}]`
       : "") +
+    (justClosed.length
+      ? `,"lessons":[{"id":"<the id given>","lesson":""}]`
+      : "") +
     `}`;
 
   const responseSchema = {
@@ -1395,6 +1488,14 @@ async function analyzePairs(snapshots, perfFeedback, openTrades = []) {
           type: "OBJECT",
           properties: { pair: STR, verdict: { type: "STRING", enum: ["hold", "close"] }, reason: STR },
           required: ["pair", "verdict", "reason"],
+        },
+      },
+      lessons: {
+        type: "ARRAY",
+        items: {
+          type: "OBJECT",
+          properties: { id: STR, lesson: STR },
+          required: ["id", "lesson"],
         },
       },
     },
@@ -1419,7 +1520,7 @@ async function analyzePairs(snapshots, perfFeedback, openTrades = []) {
   for (const rv of parsed.reviews || []) {
     if (rv && rv.pair) reviews[rv.pair.toUpperCase()] = rv;
   }
-  return { signals: out, reviews };
+  return { signals: out, reviews, lessons: parsed.lessons || [] };
 }
 
 // SELF-CRITIQUE — a second pass where the AI acts as a strict risk manager and
@@ -1478,12 +1579,24 @@ async function critiqueSignals(items) {
 }
 
 // Provider router — Groq if a key is set (generous free tier), else Gemini.
+// RESILIENCE: if the primary (70B) model hits its rate/daily-token limit, the
+// agent auto-retries on the 8B model (5x larger budget) instead of going dark.
 async function callAI(prompt, responseSchema) {
-  if (process.env.GROQ_API_KEY) return callGroq(prompt);
+  if (process.env.GROQ_API_KEY) {
+    try {
+      return await callGroq(prompt, GROQ_MODEL);
+    } catch (err) {
+      if (String(err).includes("429") && GROQ_MODEL !== "llama-3.1-8b-instant") {
+        console.warn("Groq 70B rate-limited — falling back to 8B for this run");
+        return await callGroq(prompt, "llama-3.1-8b-instant");
+      }
+      throw err;
+    }
+  }
   return callGemini(prompt, responseSchema);
 }
 
-async function callGroq(prompt) {
+async function callGroq(prompt, model) {
   const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
     method: "POST",
     headers: {
@@ -1491,7 +1604,7 @@ async function callGroq(prompt) {
       Authorization: `Bearer ${process.env.GROQ_API_KEY}`,
     },
     body: JSON.stringify({
-      model: GROQ_MODEL,
+      model: model || GROQ_MODEL,
       messages: [{ role: "user", content: prompt }],
       response_format: { type: "json_object" },
       temperature: 0.3,
@@ -1773,7 +1886,8 @@ exports.core = {
   analyse, summarize, scoreBias, computeLevels, qualityScore,
   sessionInfo, getCandles, spreadRFor, usdSide, r5,
   gradeWithTrailing, realizedR, currentR,
-  NOTIFY_MIN_SCORE, PULLBACK_ATR, ENTRY_WINDOW_HOURS, SPREADS, PAIR_RISK_MULT,
+  getCalendar, callAI, sendEmail, dispatchAlerts,
+  NOTIFY_MIN_SCORE, PULLBACK_ATR, ENTRY_WINDOW_HOURS, SPREADS, PAIR_RISK_MULT, PAIRS,
 };
 
 exports.testAlert = async () => {

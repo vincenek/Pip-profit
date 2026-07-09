@@ -37,8 +37,11 @@ exports.handler = async (event) => {
   const pairs = qs.pair ? [qs.pair.toUpperCase()] : FOCUS;
   // ?gate=70 sweeps the quality threshold — parameter research without redeploys.
   const gate = Math.max(0, Math.min(100, Number(qs.gate) || C.NOTIFY_MIN_SCORE));
+  // ?mr=1 tests the MEAN-REVERSION candidate strategy (ranging regimes only)
+  // instead of the trend strategy — evidence before it's allowed anywhere near live.
+  const mr = qs.mr === "1" || qs.mr === "true";
   const started = Date.now();
-  const out = { generatedAt: new Date().toISOString(), qualityGate: gate, method: METHOD_NOTE, results: {} };
+  const out = { generatedAt: new Date().toISOString(), qualityGate: gate, strategy: mr ? "mean-reversion (candidate)" : "trend (live)", method: METHOD_NOTE, results: {} };
 
   for (const pair of pairs) {
     if (Date.now() - started > 8000) {
@@ -47,7 +50,7 @@ exports.handler = async (event) => {
     }
     try {
       const base = await C.getCandles(pair);
-      out.results[pair] = backtestPair(pair, base, gate);
+      out.results[pair] = backtestPair(pair, base, gate, mr);
     } catch (err) {
       out.results[pair] = { error: String(err) };
     }
@@ -64,7 +67,7 @@ const METHOD_NOTE =
 // ---------------------------------------------------------------------------
 // Per-pair simulation
 // ---------------------------------------------------------------------------
-function backtestPair(pair, base, gate) {
+function backtestPair(pair, base, gate, mr) {
   if (gate == null) gate = C.NOTIFY_MIN_SCORE;
   const n = base.closes.length;
   if (n < 1400) return { error: "not enough history (" + n + " bars)" };
@@ -137,25 +140,58 @@ function backtestPair(pair, base, gate) {
       }
     }
 
-    // ---- 3. New signal (deterministic core: bias direction + quality gate).
-    const dir = snap.biasScore >= 3 ? "buy" : snap.biasScore <= -3 ? "sell" : null;
-    if (dir) {
-      // cancel-on-flip
-      if (pending && pending.direction !== dir) pending = null;
-      const quality = C.qualityScore(snap, { direction: dir, confidence: 70 }, { total: 0 });
-      const stacked =
-        (open && open.direction === dir) || (pending && pending.direction === dir);
-      if (quality >= gate && !stacked) {
-        const buy = dir === "buy";
-        const atr = snap.atr && snap.atr > 0 ? snap.atr : snap.price * 0.001;
-        const dp = snap.price >= 10 ? 3 : 5;
-        pending = {
-          direction: dir,
-          entryZone: Number((buy ? snap.price - C.PULLBACK_ATR * atr : snap.price + C.PULLBACK_ATR * atr).toFixed(dp)),
-          qualityScore: quality,
-          createdTs: barTs,
-          expiresAt: barTs + C.ENTRY_WINDOW_HOURS * 3600000,
-        };
+    // ---- 3. New signal.
+    if (mr) {
+      // MEAN-REVERSION CANDIDATE (evidence-gated): trade ONLY the chop the trend
+      // strategy sits out. Ranging regime + price stretched to a Bollinger band
+      // with stochastic agreement -> fade back toward the middle of the range.
+      if (!open && !pending && snap.regime === "ranging" && snap.session && snap.session.active) {
+        const h1 = snap.h1;
+        const mid = h1.bbUpper != null && h1.bbLower != null ? (h1.bbUpper + h1.bbLower) / 2 : null;
+        let dir = null;
+        if (mid != null && h1.stochK != null) {
+          if (snap.price <= h1.bbLower && h1.stochK < 25) dir = "buy";
+          else if (snap.price >= h1.bbUpper && h1.stochK > 75) dir = "sell";
+        }
+        if (dir) {
+          const buy = dir === "buy";
+          const atr = snap.atr && snap.atr > 0 ? snap.atr : snap.price * 0.001;
+          const dp = snap.price >= 10 ? 3 : 5;
+          const rd = (x) => Number(x.toFixed(dp));
+          const entry = snap.price; // fading the extreme IS the pullback — enter now
+          const sl = rd(buy ? entry - 1.5 * atr : entry + 1.5 * atr);
+          const band = rd(buy ? h1.bbUpper : h1.bbLower);
+          open = {
+            pair, direction: dir,
+            entry: rd(entry), sl,
+            tp1: rd(mid),          // first target: middle of the range
+            tp2: band,             // runner: the opposite band
+            qualityScore: 66, openedTs: barTs, peakR: 0, lockedR: -1,
+            partialTaken: false, bankedR: 0, gradedUpTo: barTs,
+          };
+        }
+      }
+    } else {
+      // TREND (the live strategy): bias direction + quality gate + pullback pending.
+      const dir = snap.biasScore >= 3 ? "buy" : snap.biasScore <= -3 ? "sell" : null;
+      if (dir) {
+        // cancel-on-flip
+        if (pending && pending.direction !== dir) pending = null;
+        const quality = C.qualityScore(snap, { direction: dir, confidence: 70 }, { total: 0 });
+        const stacked =
+          (open && open.direction === dir) || (pending && pending.direction === dir);
+        if (quality >= gate && !stacked) {
+          const buy = dir === "buy";
+          const atr = snap.atr && snap.atr > 0 ? snap.atr : snap.price * 0.001;
+          const dp = snap.price >= 10 ? 3 : 5;
+          pending = {
+            direction: dir,
+            entryZone: Number((buy ? snap.price - C.PULLBACK_ATR * atr : snap.price + C.PULLBACK_ATR * atr).toFixed(dp)),
+            qualityScore: quality,
+            createdTs: barTs,
+            expiresAt: barTs + C.ENTRY_WINDOW_HOURS * 3600000,
+          };
+        }
       }
     }
   }

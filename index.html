@@ -99,6 +99,8 @@
         .risk-box input { width:90px; margin-left:6px; background:var(--panel2); border:1px solid var(--line); color:var(--text); border-radius:8px; padding:6px 8px; font:inherit; }
         .risk-box .risk-note { font-size:.78rem; color:var(--muted); display:block; margin-top:8px; }
         .sizing { color:var(--green); font-weight:700; }
+        .show-more { display:block; margin:10px auto 0; background:var(--panel2); border:1px solid var(--line); color:var(--muted); border-radius:8px; padding:8px 18px; font:inherit; font-size:.8rem; cursor:pointer; }
+        .lesson { flex-basis:100%; font-size:.76rem; color:var(--muted); font-style:italic; }
         .dd-banner { background:#3a0d0d; border:1px solid var(--red); color:#fecaca; border-radius:12px; padding:12px 16px; margin-bottom:14px; font-weight:600; }
         .dd-banner.warn { background:#3a2a07; border-color:#5c4310; color:#fde68a; }
         .bt-table { width:100%; border-collapse:collapse; font-size:.8rem; }
@@ -147,6 +149,29 @@
             <span class="risk-note" id="riskNote">Set your account &amp; risk % — each trade will show exact lot size.</span>
         </div>
 
+        <div class="risk-box" id="agentBox">
+            <div class="risk-inputs" style="justify-content:space-between; width:100%;">
+                <span class="risk-label">🤖 Agent</span>
+                <span class="risk-note" id="brokerStatus" style="margin-top:0;">paper mode</span>
+            </div>
+            <div id="dayplanBox" style="display:none; margin-top:8px;">
+                <div class="risk-note" style="margin-top:0;"><b>Day plan</b> <span id="dayplanWhen"></span></div>
+                <div id="dayplanText" style="font-size:.85rem; margin-top:4px;"></div>
+            </div>
+            <details id="playbookBox" style="display:none; margin-top:8px;">
+                <summary class="risk-note" style="cursor:pointer; margin-top:0;">📖 Playbook — principles it learned from its own trades</summary>
+                <ul id="playbookList" style="font-size:.83rem; margin:6px 0 0 18px;"></ul>
+            </details>
+            <details style="margin-top:8px;">
+                <summary class="risk-note" style="cursor:pointer; margin-top:0;">🧪 Backtest — replay the exact live strategy over ~5 months (spread charged)</summary>
+                <div class="risk-inputs" style="margin-top:8px;">
+                    <button id="btBtn">Run backtest</button>
+                    <span class="risk-note" style="margin-top:0;">In-sample vs out-of-sample shows if the edge holds on unseen data. Takes ~10s.</span>
+                </div>
+                <div id="btResults" style="margin-top:10px;"></div>
+            </details>
+        </div>
+
         <h2 class="sec-title">Live signals</h2>
         <div class="grid" id="grid">
             <div class="empty">Loading signals…</div>
@@ -160,17 +185,7 @@
 
         <h2 class="sec-title" id="histTitle" style="display:none;">Recent results — which hit TP vs SL</h2>
         <div id="histList"></div>
-
-        <h2 class="sec-title">🧪 Backtest — the strategy replayed over history (with spread costs)</h2>
-        <div class="risk-box">
-            <div class="risk-inputs">
-                <button id="btBtn">Run backtest</button>
-                <span class="risk-note">Replays the exact live strategy over ~5 months of hourly data per pair,
-                charging realistic spread on every trade. In-sample vs out-of-sample split shows if the edge holds
-                on unseen data. (Takes ~10s.)</span>
-            </div>
-            <div id="btResults" style="margin-top:10px;"></div>
-        </div>
+        <button id="histMore" class="show-more" style="display:none;">Show full history</button>
 
         <p class="disclaimer">
             Technical research for personal use — not financial advice. Signals are generated,
@@ -205,6 +220,14 @@
         const pendingList = document.getElementById('pendingList');
         const histTitle = document.getElementById('histTitle');
         const histList = document.getElementById('histList');
+        const histMore = document.getElementById('histMore');
+        const brokerStatus = document.getElementById('brokerStatus');
+        const dayplanBox = document.getElementById('dayplanBox');
+        const dayplanText = document.getElementById('dayplanText');
+        const dayplanWhen = document.getElementById('dayplanWhen');
+        const playbookBox = document.getElementById('playbookBox');
+        const playbookList = document.getElementById('playbookList');
+        let showAllHist = false;
         const acctEl = document.getElementById('acct');
         const riskEl = document.getElementById('riskpct');
         const riskNote = document.getElementById('riskNote');
@@ -504,6 +527,7 @@
                 ${pnl}
                 <span class="small">lasted ${esc(dur)}</span>
                 <span class="small">closed ${esc(h.closedAt ? new Date(h.closedAt).toLocaleString() : '')}</span>
+                ${h.lesson ? `<span class="lesson">📝 ${esc(h.lesson)}</span>` : ''}
             </div>`;
         }
 
@@ -556,16 +580,42 @@
                 openTitle.style.display = open.length ? '' : 'none';
                 openList.innerHTML = open.map(openRow).join('');
 
+                // History: recent by default, full on demand — a 250-row list was
+                // burying every section below it (incl. the backtest panel).
                 const hist = data.history || [];
                 histTitle.style.display = hist.length ? '' : 'none';
-                histTitle.textContent = `Results — all ${hist.length} closed trade${hist.length === 1 ? '' : 's'} (TP vs SL, every one kept)`;
-                histList.innerHTML = hist.map(histRow).join('');
+                histTitle.textContent = showAllHist
+                    ? `Results — all ${hist.length} closed trades (every one kept)`
+                    : `Results — last ${Math.min(15, hist.length)} of ${hist.length} closed trades (every one kept)`;
+                histList.innerHTML = (showAllHist ? hist : hist.slice(0, 15)).map(histRow).join('');
+                histMore.style.display = hist.length > 15 ? '' : 'none';
+                histMore.textContent = showAllHist ? 'Show recent only' : `Show full history (${hist.length})`;
+
+                // Agent panel: broker status + day plan + playbook.
+                if (data.broker) {
+                    brokerStatus.textContent = data.broker.enabled
+                        ? `🟢 OANDA practice account ACTIVE${data.broker.executed ? ` · ${data.broker.executed} action(s) last run` : ''}${data.broker.errors && data.broker.errors.length ? ` · ⚠ ${esc(data.broker.errors[0])}` : ''}`
+                        : 'paper mode — add OANDA practice keys to let it place demo trades itself';
+                }
+                if (data.agent) {
+                    if (data.agent.dayplan) {
+                        dayplanBox.style.display = '';
+                        dayplanText.textContent = data.agent.dayplan;
+                        dayplanWhen.textContent = data.agent.dayplanAt ? '· ' + new Date(data.agent.dayplanAt).toLocaleString() : '';
+                    }
+                    if (data.agent.principles && data.agent.principles.length) {
+                        playbookBox.style.display = '';
+                        playbookList.innerHTML = data.agent.principles.map(p => `<li>${esc(p)}</li>`).join('');
+                    }
+                }
 
                 statusEl.textContent = 'updated ' + new Date().toLocaleTimeString();
             } catch (e) {
                 grid.innerHTML = '<div class="empty">No signals yet. Tap “Run now” to generate the first set.<br>(If it errors, the message will show here.)</div>';
             }
         }
+
+        histMore.addEventListener('click', () => { showAllHist = !showAllHist; load(); });
 
         runBtn.addEventListener('click', async () => {
             runBtn.disabled = true;

@@ -13,6 +13,16 @@
 [functions."signal-engine"]
   schedule = "*/30 * * * *"
 
+# The agent's morning deep-think: distill journal lessons into playbook
+# principles + write the day plan. Weekdays 06:00 UTC (before London open).
+[functions."daily-think"]
+  schedule = "0 6 * * 1-5"
+
+# The agent's fund-manager letter: live week vs fresh backtest benchmark +
+# drift check. Fridays 21:30 UTC (after the market close).
+[functions."weekly-letter"]
+  schedule = "30 21 * * 5"
+
 # Always revalidate the app shell — a cached index.html (or the installed PWA)
 # must never pin an old deploy. Assets are tiny; ETag revalidation keeps it cheap.
 [[headers]]
