@@ -20,14 +20,27 @@
 const { getStore, connectLambda } = require("@netlify/blobs");
 
 exports.handler = async (event) => {
-  try { if (event && event.blobs) connectLambda(event); } catch (e) { /* noop */ }
-
   const headers = {
     "Content-Type": "application/json",
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Headers": "Content-Type",
     "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
   };
+  // TEMP DIAGNOSTIC WRAPPER: catch absolutely everything (including blobs
+  // wiring / getStore itself) so a real error is visible instead of a bare
+  // platform 500. Remove once the strong-consistency 500 is root-caused.
+  try {
+    return await inner(event, headers);
+  } catch (err) {
+    return {
+      statusCode: 500, headers,
+      body: JSON.stringify({ diag: true, error: String(err && err.stack ? err.stack : err) }),
+    };
+  }
+};
+
+async function inner(event, headers) {
+  try { if (event && event.blobs) connectLambda(event); } catch (e) { /* noop */ }
   if (event.httpMethod === "OPTIONS") return { statusCode: 204, headers, body: "" };
 
   const store = getStore("signals");
