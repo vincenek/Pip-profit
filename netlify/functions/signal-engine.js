@@ -226,7 +226,7 @@ const RISK_PCT = Number(process.env.RISK_PCT || 0);
 
 async function getRiskSettings(store) {
   try {
-    const s = await store.get("settings", { type: "json" });
+    const s = await store.get("settings", { type: "json", consistency: "strong" });
     if (s && Number(s.account) > 0 && Number(s.riskPct) > 0) {
       // "account" = your last-set reference/starting balance. "equity" = the LIVE,
       // compounding balance (starts equal to account, then grows/shrinks as trades

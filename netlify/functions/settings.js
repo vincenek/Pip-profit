@@ -43,7 +43,7 @@ exports.handler = async (event) => {
       if (!Number.isFinite(riskPct) || riskPct < 0 || riskPct > 100) {
         return { statusCode: 400, headers, body: JSON.stringify({ error: "riskPct must be 0-100" }) };
       }
-      const existing = (await store.get("settings", { type: "json" })) || {};
+      const existing = (await store.get("settings", { type: "json", consistency: "strong" })) || {};
       // Only reset the live equity when the account number itself actually
       // changed (a deliberate "set my balance to X"). A pure risk% tweak keeps
       // your compounded balance intact.
@@ -71,7 +71,7 @@ exports.handler = async (event) => {
       if (!Number.isFinite(account) || account <= 0 || !Number.isFinite(riskPct) || riskPct <= 0 || riskPct > 100) {
         return { statusCode: 400, headers, body: JSON.stringify({ error: "usage: ?set=1&account=100&risk=1" }) };
       }
-      const existing = (await store.get("settings", { type: "json" })) || {};
+      const existing = (await store.get("settings", { type: "json", consistency: "strong" })) || {};
       const accountChanged = !existing.account || Math.abs(Number(existing.account) - account) > 0.0001;
       const equity = accountChanged
         ? account
@@ -81,7 +81,7 @@ exports.handler = async (event) => {
       return { statusCode: 200, headers, body: JSON.stringify({ saved: true, ...settings }) };
     }
 
-    const raw = (await store.get("settings", { type: "json" })) || { account: 0, riskPct: 0, equity: 0 };
+    const raw = (await store.get("settings", { type: "json", consistency: "strong" })) || { account: 0, riskPct: 0, equity: 0 };
     const equity = Number.isFinite(Number(raw.equity)) && Number(raw.equity) > 0 ? Number(raw.equity) : Number(raw.account) || 0;
     return { statusCode: 200, headers, body: JSON.stringify({ ...raw, equity }) };
   } catch (err) {
