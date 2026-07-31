@@ -15,32 +15,29 @@
 //
 //   GET  /.netlify/functions/settings                    -> {account, riskPct, equity, updatedAt}
 //   POST /.netlify/functions/settings {account, riskPct}  -> saves + returns it
+//   GET  /.netlify/functions/settings?set=1&account=X&risk=Y -> sets + returns it
+//
+// NOTE: reads here are plain (eventual) consistency, on purpose — a
+// consistency:"strong" read option was tried and caused this function to fail
+// with an uncatchable 500 (not a JS error; likely a platform-level timeout on
+// the strong-consistency path for this key), so it was reverted here. The
+// engine's OWN read of settings (signal-engine.js) still uses strong
+// consistency and is what actually matters for correctness (it's read once
+// per 30-min run, so a brief propagation lag there is a non-issue); this
+// endpoint is what a human hits directly, where broken >> occasionally stale.
 // ---------------------------------------------------------------------------
 
 const { getStore, connectLambda } = require("@netlify/blobs");
 
 exports.handler = async (event) => {
+  try { if (event && event.blobs) connectLambda(event); } catch (e) { /* noop */ }
+
   const headers = {
     "Content-Type": "application/json",
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Headers": "Content-Type",
     "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
   };
-  // TEMP DIAGNOSTIC WRAPPER: catch absolutely everything (including blobs
-  // wiring / getStore itself) so a real error is visible instead of a bare
-  // platform 500. Remove once the strong-consistency 500 is root-caused.
-  try {
-    return await inner(event, headers);
-  } catch (err) {
-    return {
-      statusCode: 500, headers,
-      body: JSON.stringify({ diag: true, error: String(err && err.stack ? err.stack : err) }),
-    };
-  }
-};
-
-async function inner(event, headers) {
-  try { if (event && event.blobs) connectLambda(event); } catch (e) { /* noop */ }
   if (event.httpMethod === "OPTIONS") return { statusCode: 204, headers, body: "" };
 
   const store = getStore("signals");
@@ -56,7 +53,7 @@ async function inner(event, headers) {
       if (!Number.isFinite(riskPct) || riskPct < 0 || riskPct > 100) {
         return { statusCode: 400, headers, body: JSON.stringify({ error: "riskPct must be 0-100" }) };
       }
-      const existing = (await store.get("settings", { type: "json", consistency: "strong" })) || {};
+      const existing = (await store.get("settings", { type: "json" })) || {};
       // Only reset the live equity when the account number itself actually
       // changed (a deliberate "set my balance to X"). A pure risk% tweak keeps
       // your compounded balance intact.
@@ -84,7 +81,7 @@ async function inner(event, headers) {
       if (!Number.isFinite(account) || account <= 0 || !Number.isFinite(riskPct) || riskPct <= 0 || riskPct > 100) {
         return { statusCode: 400, headers, body: JSON.stringify({ error: "usage: ?set=1&account=100&risk=1" }) };
       }
-      const existing = (await store.get("settings", { type: "json", consistency: "strong" })) || {};
+      const existing = (await store.get("settings", { type: "json" })) || {};
       const accountChanged = !existing.account || Math.abs(Number(existing.account) - account) > 0.0001;
       const equity = accountChanged
         ? account
@@ -94,7 +91,7 @@ async function inner(event, headers) {
       return { statusCode: 200, headers, body: JSON.stringify({ saved: true, ...settings }) };
     }
 
-    const raw = (await store.get("settings", { type: "json", consistency: "strong" })) || { account: 0, riskPct: 0, equity: 0 };
+    const raw = (await store.get("settings", { type: "json" })) || { account: 0, riskPct: 0, equity: 0 };
     const equity = Number.isFinite(Number(raw.equity)) && Number(raw.equity) > 0 ? Number(raw.equity) : Number(raw.account) || 0;
     return { statusCode: 200, headers, body: JSON.stringify({ ...raw, equity }) };
   } catch (err) {
