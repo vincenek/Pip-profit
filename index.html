@@ -560,15 +560,17 @@
                 const data = await res.json();
                 renderTrack(data.stats);
 
-                // Drawdown circuit-breaker banner.
+                // Graduated drawdown banner: shows the current risk tier, not just on/off.
                 const ddB = document.getElementById('ddBanner');
-                if (data.drawdown && (data.drawdown.paused || data.drawdown.warned)) {
+                if (data.drawdown && (data.drawdown.hardPaused || data.drawdown.tier > 0)) {
                     const pct = (data.drawdown.dd * 100).toFixed(1);
                     ddB.style.display = '';
-                    ddB.className = 'dd-banner' + (data.drawdown.paused ? '' : ' warn');
-                    ddB.textContent = data.drawdown.paused
-                        ? `🛑 Drawdown circuit-breaker ACTIVE (−${pct}%) — new trades paused until equity recovers. Open trades still managed.`
-                        : `⚠️ Drawdown warning: equity −${pct}% from start. Breaker pauses new trades at −20%.`;
+                    ddB.className = 'dd-banner' + (data.drawdown.hardPaused ? '' : ' warn');
+                    ddB.textContent = data.drawdown.hardPaused
+                        ? `🛑 Drawdown hard-stop ACTIVE (−${pct}%) — new trades paused until equity recovers. Open trades still managed.`
+                        : data.drawdown.tier === 2
+                        ? `🔻 Drawdown −${pct}% — trading at ¼ size (still taking trades, just smaller).`
+                        : `🔻 Drawdown −${pct}% — trading at half size (still taking trades, just smaller).`;
                 } else if (ddB) {
                     ddB.style.display = 'none';
                 }

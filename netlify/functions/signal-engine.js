@@ -120,9 +120,15 @@ const PAIR_RISK_MULT = { "GBP/USD": 0.5 };
 // PORTFOLIO RISK (institutional guards):
 const MAX_OPEN_TRADES = Number(process.env.MAX_OPEN_TRADES || 3);      // total concurrent positions
 const MAX_SAME_SIDE_USD = Number(process.env.MAX_SAME_SIDE_USD || 2);  // same-direction USD exposure cap
-const DD_WARN = Number(process.env.DD_WARN || 0.10);   // -10% equity -> email warning
-const DD_PAUSE = Number(process.env.DD_PAUSE || 0.20); // -20% equity -> pause new trades
-const DD_RESUME = Number(process.env.DD_RESUME || 0.15); // resume below -15% (hysteresis)
+// GRADUATED drawdown response (how real risk desks actually de-risk): reduce
+// position size as drawdown deepens instead of a hard on/off switch. Only a
+// genuinely dangerous drawdown (DD_HARD) stops new trades outright.
+const DD_TIER1 = Number(process.env.DD_TIER1 || 0.10);     // -10% equity -> half size
+const DD_TIER1_MULT = Number(process.env.DD_TIER1_MULT || 0.5);
+const DD_TIER2 = Number(process.env.DD_TIER2 || 0.20);     // -20% equity -> quarter size
+const DD_TIER2_MULT = Number(process.env.DD_TIER2_MULT || 0.25);
+const DD_HARD = Number(process.env.DD_HARD || 0.35);       // -35% equity -> hard pause (true stop)
+const DD_HARD_RESUME = Number(process.env.DD_HARD_RESUME || 0.25); // resume below -25% (hysteresis)
 
 // Which way a position leans on USD: +1 long USD, -1 short USD, 0 no USD leg.
 function usdSide(pair, direction) {
@@ -196,8 +202,8 @@ async function getMarketContext(store, okBuilt) {
 
 // Pre-trade portfolio checks. Returns a human-readable block reason, or null.
 function portfolioBlock(record, ledger) {
-  if (ledger.ddState && ledger.ddState.paused) {
-    return "drawdown circuit-breaker active — new trades paused until equity recovers";
+  if (ledger.ddState && ledger.ddState.hardPaused) {
+    return `drawdown hard-stop active (-${DD_HARD * 100}%+) — new trades paused until equity recovers above -${DD_HARD_RESUME * 100}%`;
   }
   if (ledger.open.filter((o) => !o.shadow).length >= MAX_OPEN_TRADES) {
     return `max ${MAX_OPEN_TRADES} concurrent positions reached`;
@@ -246,7 +252,7 @@ function positionSize(entry, stop, pair, risk) {
   if (!account || !riskPct || !entry || !stop) return null;
   const stopDist = Math.abs(entry - stop);
   if (stopDist <= 0) return null;
-  const riskAmt = account * riskPct / 100 * (PAIR_RISK_MULT[pair] || 1);
+  const riskAmt = account * riskPct / 100 * (PAIR_RISK_MULT[pair] || 1) * (risk && risk.ddMult != null ? risk.ddMult : 1);
   const [base, quote] = pair.split("/");
   const contract = 100000;
   const usdPerLotPerPrice = quote === "USD" ? contract : base === "USD" ? contract / entry : contract;
@@ -288,6 +294,16 @@ exports.handler = async (event) => {
   // just like a real account). Persisted back to Blobs at the end of the run.
   const riskState = { ...riskSettings };
 
+  // Existing ledger (track record) — loaded early so the drawdown estimate
+  // below (and checkPending, which runs before this run's closes settle) can
+  // see the persisted circuit-breaker state.
+  const ledger = (await getJSON(store, "ledger")) || {
+    open: [],
+    closed: [],
+    stats: emptyStats(),
+  };
+  ledger.pending = ledger.pending || []; // setups waiting for a pullback entry
+
   // If a demo broker is connected, ITS balance is the source of truth (exactly
   // like MetaTrader): the agents read the account and size trades off it.
   const routedEarly = brokerModule();
@@ -301,19 +317,24 @@ exports.handler = async (event) => {
     } catch (e) { console.warn("broker balance read failed:", String(e).slice(0, 120)); }
   }
 
+  // Early graduated-drawdown estimate, off equity AS OF THE START of this run —
+  // used by checkPending (step 1, runs before this run's closes settle) so a
+  // pending that triggers into a real position is sized with the current risk
+  // posture. The fuller pass later (after closes) refines this + persists state
+  // + fires alerts; that later value is what NEW signals this run get sized with.
+  riskState.ddMult = 1;
+  if (ledger.ddState && ledger.ddState.hardPaused) {
+    riskState.ddMult = 0;
+  } else if (riskSettings.configured && riskState.account > 0) {
+    const dd0 = 1 - riskState.equity / riskState.account;
+    riskState.ddMult = dd0 >= DD_TIER2 ? DD_TIER2_MULT : dd0 >= DD_TIER1 ? DD_TIER1_MULT : 1;
+  }
+
   // Economic calendar once for the whole run.
   const calendar = await getCalendar().catch((e) => {
     console.warn("calendar fetch failed:", String(e));
     return [];
   });
-
-  // Existing ledger (track record) we will update as signals resolve.
-  const ledger = (await getJSON(store, "ledger")) || {
-    open: [],
-    closed: [],
-    stats: emptyStats(),
-  };
-  ledger.pending = ledger.pending || []; // setups waiting for a pullback entry
 
   // ADAPT: the engine's real record, fed back so the AI learns from outcomes,
   // and per-pair calibration so the quality score reflects where it actually wins.
@@ -431,26 +452,33 @@ exports.handler = async (event) => {
     ledger.open = stillOpen;
   }
 
-  // 2c. DRAWDOWN CIRCUIT-BREAKER — checked after all closes have settled equity.
-  //     Warn at -DD_WARN, pause NEW trades at -DD_PAUSE, auto-resume with
-  //     hysteresis below -DD_RESUME. Open trades keep being managed throughout.
-  ledger.ddState = ledger.ddState || { warned: false, paused: false };
+  // 2c. GRADUATED DRAWDOWN RESPONSE — position size steps DOWN as drawdown
+  // deepens (tier1 half-size at -10%, tier2 quarter-size at -20%) instead of a
+  // binary on/off switch. Only a genuinely dangerous drawdown (DD_HARD) stops
+  // new trades outright. Open trades keep being managed throughout, always.
+  ledger.ddState = ledger.ddState || { tier: 0, hardPaused: false };
+  riskState.ddMult = 1;
   if (riskSettings.configured && riskState.account > 0) {
     const dd = 1 - riskState.equity / riskState.account;
-    if (!ledger.ddState.paused && dd >= DD_PAUSE) {
-      ledger.ddState.paused = true;
-      manageAlerts.push({ type: "risk", level: "pause", dd });
-    } else if (ledger.ddState.paused && dd < DD_RESUME) {
-      ledger.ddState.paused = false;
-      ledger.ddState.warned = false;
-      manageAlerts.push({ type: "risk", level: "resume", dd });
+    const prevHard = ledger.ddState.hardPaused;
+    const prevTier = ledger.ddState.tier || 0;
+
+    if (prevHard) {
+      if (dd < DD_HARD_RESUME) {
+        ledger.ddState.hardPaused = false;
+        manageAlerts.push({ type: "risk", level: "hard_resume", dd });
+      }
+    } else if (dd >= DD_HARD) {
+      ledger.ddState.hardPaused = true;
+      manageAlerts.push({ type: "risk", level: "hard_pause", dd });
     }
-    if (!ledger.ddState.warned && !ledger.ddState.paused && dd >= DD_WARN) {
-      ledger.ddState.warned = true;
-      manageAlerts.push({ type: "risk", level: "warn", dd });
-    } else if (ledger.ddState.warned && dd < DD_WARN / 2) {
-      ledger.ddState.warned = false; // recovered well clear — re-arm the warning
+
+    const tier = ledger.ddState.hardPaused ? prevTier : dd >= DD_TIER2 ? 2 : dd >= DD_TIER1 ? 1 : 0;
+    if (tier !== prevTier && !ledger.ddState.hardPaused) {
+      manageAlerts.push({ type: "risk", level: tier > prevTier ? "tier_down" : "tier_up", dd, tier });
     }
+    ledger.ddState.tier = tier;
+    riskState.ddMult = ledger.ddState.hardPaused ? 0 : tier === 2 ? DD_TIER2_MULT : tier === 1 ? DD_TIER1_MULT : 1;
   }
 
   // 3. Assemble records, score, track NEW signals — focus pairs only.
@@ -651,8 +679,9 @@ exports.handler = async (event) => {
     },
     deskLog: await mergeDeskLog(store), // recent committee deliberations (own blob key)
     drawdown: {
-      paused: !!(ledger.ddState && ledger.ddState.paused),
-      warned: !!(ledger.ddState && ledger.ddState.warned),
+      hardPaused: !!(ledger.ddState && ledger.ddState.hardPaused),
+      tier: (ledger.ddState && ledger.ddState.tier) || 0, // 0 full size, 1 half, 2 quarter
+      ddMult: riskState.ddMult != null ? riskState.ddMult : 1,
       dd: riskState.account > 0 ? Number((1 - riskState.equity / riskState.account).toFixed(4)) : 0,
     },
     stats: ledger.stats,
@@ -2099,18 +2128,19 @@ async function dispatchAlerts(events, ledger = null, riskSettings = null) {
       });
     } else if (m.type === "risk") {
       const pct = (m.dd * 100).toFixed(1);
-      items.push({
-        key: `RISK:${m.level}:${pct}`,
-        text:
-          m.level === "pause"
-            ? `🛑 DRAWDOWN BREAKER TRIPPED — equity is down ${pct}% from your starting balance.\n` +
-              `NEW trades are PAUSED (open trades still managed). Auto-resumes if equity recovers ` +
-              `to within ${(DD_RESUME * 100).toFixed(0)}%. This is the capital-protection kill-switch doing its job.`
-            : m.level === "warn"
-            ? `⚠️ DRAWDOWN WARNING — equity is down ${pct}% from your starting balance.\n` +
-              `If it reaches ${(DD_PAUSE * 100).toFixed(0)}%, the circuit-breaker pauses all new trades.`
-            : `✅ DRAWDOWN RECOVERED — equity is back within ${(DD_RESUME * 100).toFixed(0)}% of start. New trades resumed.`,
-      });
+      const texts = {
+        hard_pause: `🛑 DRAWDOWN HARD-STOP — equity is down ${pct}% from your starting balance.\n` +
+          `NEW trades are PAUSED (open trades still managed). This is the genuinely-dangerous-territory ` +
+          `kill-switch (-${(DD_HARD * 100).toFixed(0)}%+) — auto-resumes once equity recovers to within ${(DD_HARD_RESUME * 100).toFixed(0)}%.`,
+        hard_resume: `✅ HARD-STOP LIFTED — equity is back within ${(DD_HARD_RESUME * 100).toFixed(0)}% of start. New trades resumed.`,
+        tier_down: m.tier === 2
+          ? `🔻 RISK REDUCED TO ¼ SIZE — equity is down ${pct}%. Still trading, just smaller (-${(DD_TIER2 * 100).toFixed(0)}%+ tier).`
+          : `🔻 RISK REDUCED TO HALF SIZE — equity is down ${pct}%. Still trading, just smaller (-${(DD_TIER1 * 100).toFixed(0)}%+ tier).`,
+        tier_up: m.tier === 0
+          ? `✅ RISK BACK TO FULL SIZE — equity recovered above -${(DD_TIER1 * 100).toFixed(0)}%.`
+          : `📈 RISK EASED TO HALF SIZE — equity recovered above -${(DD_TIER2 * 100).toFixed(0)}%.`,
+      };
+      items.push({ key: `RISK:${m.level}:${pct}`, text: texts[m.level] || `Drawdown update: ${pct}% (${m.level})` });
     }
   }
   for (const c of closed) {
