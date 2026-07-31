@@ -187,6 +187,8 @@ exports.handler = async (event) => {
           open: (latest.open || []).length,
           pending: (latest.pending || []).length,
           broker: latest.broker,
+          drawdown: latest.drawdown,
+          riskEquity: latest.riskSettings && latest.riskSettings.equity,
           signals: (latest.signals || []).map((s) => ({
             pair: s.pair, direction: s.direction, qualityScore: s.qualityScore,
             error: s.error, risk_block: s.risk_block,
