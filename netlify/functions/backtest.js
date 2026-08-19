@@ -51,7 +51,7 @@ function cotInfoFor(pair) {
 async function fetchHistoricalCOT(market) {
   const url = "https://publicreporting.cftc.gov/resource/" + C.COT_DATASET +
     ".json?$q=" + encodeURIComponent(market) +
-    "&$order=report_date_as_yyyy_mm_dd DESC&$limit=60"; // ~60 weeks, comfortably covers the backtest window
+    "&$order=report_date_as_yyyy_mm_dd%20DESC&$limit=60"; // ~60 weeks, comfortably covers the backtest window
   const res = await fetch(url);
   if (!res.ok) throw new Error("CFTC " + res.status);
   const rows = await res.json();
