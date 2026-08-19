@@ -48,10 +48,10 @@ function cotInfoFor(pair) {
 
 // Weekly net non-commercial (large speculator) positioning, oldest-first, for
 // the whole backtest window plus margin. One request, not one-per-bar.
-async function fetchHistoricalCOT(market) {
+async function fetchHistoricalCOT(market, limit) {
   const url = "https://publicreporting.cftc.gov/resource/" + C.COT_DATASET +
     ".json?$q=" + encodeURIComponent(market) +
-    "&$order=report_date_as_yyyy_mm_dd%20DESC&$limit=60"; // ~60 weeks, comfortably covers the backtest window
+    "&$order=report_date_as_yyyy_mm_dd%20DESC&$limit=" + (limit || 60); // ~60 weeks, comfortably covers the backtest window
   const res = await fetch(url);
   if (!res.ok) throw new Error("CFTC " + res.status);
   const rows = await res.json();
@@ -115,7 +115,7 @@ exports.handler = async (event) => {
       if (useCot) {
         const info = cotInfoFor(pair);
         if (info) {
-          try { cotSeries = await fetchHistoricalCOT(info.market); }
+          try { cotSeries = await fetchHistoricalCOT(info.market, Number(qs.cotlimit) || 60); }
           catch (e) { out.results[pair] = { error: "COT fetch failed: " + String(e).slice(0, 150) }; continue; }
           if (qs.cotdebug === "1") {
             out.results[pair] = {
