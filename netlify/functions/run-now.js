@@ -12,6 +12,13 @@
 
 const { getStore, connectLambda } = require("@netlify/blobs");
 const engine = require("./signal-engine.js");
+// daily-think and weekly-letter are SCHEDULED functions — Netlify blocks direct
+// URL invocation of those in production by design ("You can't invoke scheduled
+// functions directly with a URL"). Proxying through this NON-scheduled function
+// (same pattern as signal-engine below) restores manual/on-demand testability
+// without touching their real cron schedules.
+const dailyThink = require("./daily-think.js");
+const weeklyLetter = require("./weekly-letter.js");
 
 exports.handler = async (event) => {
   const headers = {
@@ -144,6 +151,25 @@ exports.handler = async (event) => {
     try {
       const result = await engine.brokerTest();
       return { statusCode: 200, headers, body: JSON.stringify({ brokertest: true, ...result }, null, 2) };
+    } catch (err) {
+      return { statusCode: 500, headers, body: JSON.stringify({ error: String(err) }, null, 2) };
+    }
+  }
+
+  // ?dailythink=1 / ?weeklyletter=1 → manually fire the scheduled deep-think /
+  // fund-manager letter on demand (proxied — see the require() comment above).
+  if (qs && (qs.dailythink === "1" || qs.dailythink === "true")) {
+    try {
+      const result = await dailyThink.handler(event || {});
+      return { statusCode: 200, headers, body: JSON.stringify({ triggered: "daily-think", status: result.statusCode, result: safeParse(result.body) }, null, 2) };
+    } catch (err) {
+      return { statusCode: 500, headers, body: JSON.stringify({ error: String(err) }, null, 2) };
+    }
+  }
+  if (qs && (qs.weeklyletter === "1" || qs.weeklyletter === "true")) {
+    try {
+      const result = await weeklyLetter.handler(event || {});
+      return { statusCode: 200, headers, body: JSON.stringify({ triggered: "weekly-letter", status: result.statusCode, result: safeParse(result.body) }, null, 2) };
     } catch (err) {
       return { statusCode: 500, headers, body: JSON.stringify({ error: String(err) }, null, 2) };
     }
