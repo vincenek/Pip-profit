@@ -139,6 +139,17 @@
 
         <div class="track" id="track"></div>
 
+        <div class="risk-box" id="cpBox">
+            <div class="risk-inputs" style="justify-content:space-between; width:100%;">
+                <span class="risk-label">📍 View since</span>
+                <span>
+                    <select id="cpSelect"><option value="">All-time</option></select>
+                    <button id="cpMarkBtn" class="mini-btn">Mark checkpoint now</button>
+                </span>
+            </div>
+            <div class="track" id="cpTrack" style="display:none; margin-top:10px;"></div>
+        </div>
+
         <div id="ddBanner" style="display:none;"></div>
 
         <div class="risk-box" id="agentBox">
@@ -227,6 +238,11 @@
 
         const grid = document.getElementById('grid');
         const track = document.getElementById('track');
+        const cpSelect = document.getElementById('cpSelect');
+        const cpMarkBtn = document.getElementById('cpMarkBtn');
+        const cpTrack = document.getElementById('cpTrack');
+        let checkpoints = [];
+        let lastData = null; // last full get-signal payload, so switching checkpoints doesn't need a refetch
         const statusEl = document.getElementById('status');
         const runBtn = document.getElementById('runBtn');
         const openTitle = document.getElementById('openTitle');
@@ -414,9 +430,10 @@
             return h > 0 ? h + 'h ' + m + 'm' : m + 'm';
         }
 
-        function renderTrack(stats) {
+        function renderTrack(stats, target) {
+            target = target || track;
             if (!stats || !stats.total) {
-                track.innerHTML = '<div class="pill"><div class="n">—</div><div class="l">Track record builds as signals resolve</div></div>';
+                target.innerHTML = '<div class="pill"><div class="n">—</div><div class="l">Track record builds as signals resolve</div></div>';
                 return;
             }
             const sign = v => (v > 0 ? 'pos' : v < 0 ? 'neg' : '');
@@ -429,10 +446,73 @@
                 ['Saved', stats.scratch ?? 0, ''],
                 ['Open', stats.open, ''],
             ];
-            track.innerHTML = pills.map(p =>
+            target.innerHTML = pills.map(p =>
                 `<div class="pill"><div class="n ${p[2]}">${esc(p[1])}</div><div class="l">${esc(p[0])}</div></div>`
             ).join('');
         }
+
+        // Same math as the server's recomputeStats(), applied to a FILTERED slice
+        // of trades (closed after the chosen checkpoint) — a pure client-side
+        // re-view of data already on the page, no extra fetch needed.
+        function statsFor(hist, openCount) {
+            const wins = hist.filter(c => c.outcome === 'win').length;
+            const losses = hist.filter(c => c.outcome === 'loss').length;
+            const scratch = hist.filter(c => c.outcome === 'scratch').length;
+            const decisive = wins + losses;
+            const totalR = hist.reduce((a, c) => a + (c.rMultiple || 0), 0);
+            const total = hist.length;
+            return {
+                total, wins, losses, scratch, open: openCount,
+                winRate: decisive ? Math.round((wins / decisive) * 100) : 0,
+                totalR: Number(totalR.toFixed(2)),
+                avgR: total ? Number((totalR / total).toFixed(2)) : 0,
+            };
+        }
+
+        function renderCheckpointView() {
+            const id = cpSelect.value;
+            if (!id || !lastData) { cpTrack.style.display = 'none'; return; }
+            const cp = checkpoints.find(c => c.id === id);
+            if (!cp) { cpTrack.style.display = 'none'; return; }
+            const sinceTs = Date.parse(cp.at);
+            const hist = (lastData.history || []).filter(h => Date.parse(h.closedAt) >= sinceTs);
+            const openSince = (lastData.open || []).filter(o => (o.openedTs || Date.parse(o.openedAt)) >= sinceTs).length;
+            cpTrack.style.display = '';
+            renderTrack(statsFor(hist, openSince), cpTrack);
+        }
+        cpSelect.addEventListener('change', renderCheckpointView);
+        cpMarkBtn.addEventListener('click', async () => {
+            const label = prompt('Label this checkpoint (optional):', '');
+            if (label === null) return; // cancelled
+            cpMarkBtn.disabled = true;
+            try {
+                const res = await fetch('/.netlify/functions/checkpoints?add=1' + (label ? '&label=' + encodeURIComponent(label) : ''), { cache: 'no-store' });
+                const data = await res.json();
+                if (data.checkpoints) {
+                    checkpoints = data.checkpoints;
+                    populateCheckpoints();
+                    if (data.checkpoint) { cpSelect.value = data.checkpoint.id; renderCheckpointView(); }
+                }
+            } catch (e) { /* silent — try again */ }
+            cpMarkBtn.disabled = false;
+        });
+        function populateCheckpoints() {
+            const cur = cpSelect.value;
+            cpSelect.innerHTML = '<option value="">All-time</option>' +
+                checkpoints.slice().reverse().map(c =>
+                    `<option value="${esc(c.id)}">${esc(c.label)} (${new Date(c.at).toLocaleDateString()})</option>`
+                ).join('');
+            if (checkpoints.some(c => c.id === cur)) cpSelect.value = cur;
+        }
+        async function loadCheckpoints() {
+            try {
+                const res = await fetch('/.netlify/functions/checkpoints', { cache: 'no-store' });
+                const data = await res.json();
+                checkpoints = data.checkpoints || [];
+                populateCheckpoints();
+            } catch (e) { /* dashboard still works without this */ }
+        }
+        loadCheckpoints();
 
         function card(s) {
             const dir = s.direction || 'no_trade';
@@ -559,6 +639,8 @@
                 if (!res.ok) throw new Error('not ready');
                 const data = await res.json();
                 renderTrack(data.stats);
+                lastData = data;
+                renderCheckpointView();
 
                 // Graduated drawdown banner: shows the current risk tier, not just on/off.
                 const ddB = document.getElementById('ddBanner');
