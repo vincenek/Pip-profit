@@ -2347,6 +2347,7 @@ exports.core = {
   gradeWithTrailing, realizedR, currentR,
   getCalendar, callAI, sendEmail, dispatchAlerts,
   NOTIFY_MIN_SCORE, PULLBACK_ATR, ENTRY_WINDOW_HOURS, SPREADS, PAIR_RISK_MULT, PAIRS,
+  COT_DATASET, COT_MARKETS,
 };
 
 exports.testAlert = async () => {

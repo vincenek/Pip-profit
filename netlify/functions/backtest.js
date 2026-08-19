@@ -29,6 +29,54 @@ const C = engine.core;
 const FOCUS = ["EUR/USD", "GBP/USD", "USD/JPY"];
 const TF_SLICE = 400; // bars fed to analyse() per TF — plenty for every indicator
 
+// ---------------------------------------------------------------------------
+// COT (Commitments of Traders) — historical, point-in-time correct, for the
+// ?cot=1 candidate filter. Reuses the SAME market mapping the live engine's
+// getMarketContext() uses (C.COT_MARKETS/C.COT_DATASET), just fetched as a
+// full history instead of "latest only".
+// ---------------------------------------------------------------------------
+
+// Which currency's COT contract governs this pair, and whether its sign needs
+// inverting (base currency's own contract = direct; quote currency's = inverted,
+// since e.g. USD/JPY strength tracks USD strength, i.e. JPY weakness/net-shorts).
+function cotInfoFor(pair) {
+  const [base, quote] = pair.split("/");
+  if (C.COT_MARKETS[base]) return { market: C.COT_MARKETS[base], invert: false };
+  if (C.COT_MARKETS[quote]) return { market: C.COT_MARKETS[quote], invert: true };
+  return null;
+}
+
+// Weekly net non-commercial (large speculator) positioning, oldest-first, for
+// the whole backtest window plus margin. One request, not one-per-bar.
+async function fetchHistoricalCOT(market) {
+  const url = "https://publicreporting.cftc.gov/resource/" + C.COT_DATASET +
+    ".json?$q=" + encodeURIComponent(market) +
+    "&$order=report_date_as_yyyy_mm_dd DESC&$limit=60"; // ~60 weeks, comfortably covers the backtest window
+  const res = await fetch(url);
+  if (!res.ok) throw new Error("CFTC " + res.status);
+  const rows = await res.json();
+  return rows
+    .map((r) => ({
+      ts: Date.parse(r.report_date_as_yyyy_mm_dd + "T00:00:00Z"),
+      net: Number(r.noncomm_positions_long_all || 0) - Number(r.noncomm_positions_short_all || 0),
+    }))
+    .filter((p) => Number.isFinite(p.ts) && Number.isFinite(p.net))
+    .sort((a, b) => a.ts - b.ts);
+}
+
+// Point-in-time lookup: the most recent report that would ACTUALLY have been
+// public knowledge by time `ts` — CFTC releases a Tuesday-snapshot report the
+// following Friday (~3 day lag), so using report_date alone would be look-ahead
+// bias. Returns null if no report had been published yet that far back.
+function cotAsOf(series, ts) {
+  let val = null;
+  for (const p of series) {
+    if (p.ts + 3 * 86400000 <= ts) val = p;
+    else break;
+  }
+  return val;
+}
+
 exports.handler = async (event) => {
   try { if (event && event.blobs) connectLambda(event); } catch (e) { /* noop */ }
   const headers = { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" };
@@ -46,9 +94,15 @@ exports.handler = async (event) => {
   // new signal — testing whether stricter trend confirmation actually helps,
   // in and out of sample, not just a hunch.
   const minAdx = Number(qs.minAdx) || 0;
+  // ?cot=1 hard-requires REAL institutional positioning (CFTC COT, historical,
+  // point-in-time correct) to agree with the trade direction — a genuinely
+  // different information source than price-action indicators, not another
+  // twist on the same signal.
+  const useCot = qs.cot === "1" || qs.cot === "true";
   const started = Date.now();
-  const strategy = sb ? "ICT silver bullet (candidate)" : mr ? "mean-reversion (candidate)" : "trend (live)";
-  const out = { generatedAt: new Date().toISOString(), qualityGate: gate, strategy, method: sb ? SB_METHOD_NOTE : METHOD_NOTE, results: {} };
+  const strategy = (sb ? "ICT silver bullet (candidate)" : mr ? "mean-reversion (candidate)" : "trend (live)") +
+    (useCot ? " + COT filter (candidate)" : "");
+  const out = { generatedAt: new Date().toISOString(), qualityGate: gate, minAdx, cot: useCot, strategy, method: sb ? SB_METHOD_NOTE : METHOD_NOTE, results: {} };
 
   for (const pair of pairs) {
     if (Date.now() - started > 8000) {
@@ -57,7 +111,18 @@ exports.handler = async (event) => {
     }
     try {
       const base = await C.getCandles(pair);
-      out.results[pair] = backtestPair(pair, base, gate, mr, sb, minAdx);
+      let cotSeries = null;
+      if (useCot) {
+        const info = cotInfoFor(pair);
+        if (info) {
+          try { cotSeries = await fetchHistoricalCOT(info.market); }
+          catch (e) { out.results[pair] = { error: "COT fetch failed: " + String(e).slice(0, 150) }; continue; }
+        } else {
+          out.results[pair] = { error: "no COT market mapping for " + pair };
+          continue;
+        }
+      }
+      out.results[pair] = backtestPair(pair, base, gate, mr, sb, minAdx, useCot ? cotSeries : null);
     } catch (err) {
       out.results[pair] = { error: String(err) };
     }
@@ -98,7 +163,7 @@ function inSilverBulletWindow(d) {
 // ---------------------------------------------------------------------------
 // Per-pair simulation
 // ---------------------------------------------------------------------------
-function backtestPair(pair, base, gate, mr, sb, minAdx) {
+function backtestPair(pair, base, gate, mr, sb, minAdx, cotSeries) {
   if (gate == null) gate = C.NOTIFY_MIN_SCORE;
   const n = base.closes.length;
   if (n < 1400) return { error: "not enough history (" + n + " bars)" };
@@ -242,7 +307,17 @@ function backtestPair(pair, base, gate, mr, sb, minAdx) {
       // + optional hard trend-strength requirement (minAdx sweep).
       const dir = snap.biasScore >= 3 ? "buy" : snap.biasScore <= -3 ? "sell" : null;
       const trendOk = !minAdx || (snap.h4 && snap.h4.adx != null && snap.h4.adx >= minAdx);
-      if (dir && trendOk) {
+      let cotOk = true;
+      if (dir && cotSeries) {
+        const info = cotInfoFor(pair);
+        const cv = cotAsOf(cotSeries, barTs);
+        if (!cv) cotOk = false; // no COT data yet this far back -> don't trade on an unverified guess
+        else {
+          const bullish = info.invert ? cv.net < 0 : cv.net >= 0;
+          cotOk = dir === "buy" ? bullish : !bullish;
+        }
+      }
+      if (dir && trendOk && cotOk) {
         // cancel-on-flip
         if (pending && pending.direction !== dir) pending = null;
         const quality = C.qualityScore(snap, { direction: dir, confidence: 70 }, { total: 0 });
