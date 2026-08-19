@@ -615,10 +615,26 @@ exports.handler = async (event) => {
 
   recomputeStats(ledger);
 
+  // AI health transition — only meaningful if we actually tried to call the AI
+  // this run (skip false alarms on quiet weekend/no-candidate runs).
+  const aiWasCalled = marketOpen && (focusBuilt.length || ledger.open.length || justClosed.length);
+  let aiHealth = null;
+  if (aiWasCalled) {
+    const aiIsDown = !!aiError;
+    if (aiIsDown && !ledger.aiWasDown) {
+      aiHealth = { down: true, error: aiError };
+    } else if (!aiIsDown && ledger.aiWasDown) {
+      aiHealth = { recovered: true, recoveredKey: new Date().toISOString() };
+    } else if (aiIsDown) {
+      aiHealth = { down: true, error: aiError }; // still down — daily-keyed dedup re-alerts once/day
+    }
+    ledger.aiWasDown = aiIsDown;
+  }
+
   // Notifications first (dedup keys recorded on the ledger), THEN persist.
   // Use riskState (post-run) so alerts after a close this run show fresh equity.
   await dispatchAlerts(
-    { entered: justEntered, pending: justPending, cancelled: cancelledSetups, closed: justClosed, manage: manageAlerts },
+    { entered: justEntered, pending: justPending, cancelled: cancelledSetups, closed: justClosed, manage: manageAlerts, aiHealth },
     ledger,
     riskState
   );
@@ -1931,10 +1947,14 @@ async function critiqueSignals(items) {
 // openai/gpt-oss-120b (primary) and openai/gpt-oss-20b (fallback). Both share
 // the SAME free-tier daily budget (200k tokens/day) so 120b is a strict
 // upgrade over the old 70b split (better reasoning AND 2x its old 100k/day).
-// RESILIENCE: if the primary hits its rate/daily-token limit, the agent falls
-// back to the smaller model — and REMEMBERS the downgrade for 30 min so later
-// calls stop paying the 429-then-retry double tax (which was pushing
-// multi-call runs past the 10s function timeout).
+// RESILIENCE: if the primary hits its rate/daily-token limit — OR Groq stops
+// serving it entirely (model retired; this exact thing happened 2026-08-16
+// and silently killed every AI call for days with no alert) — the agent falls
+// back to the smaller model, and REMEMBERS the downgrade for 30 min so later
+// calls stop paying the failure-then-retry double tax (which was pushing
+// multi-call runs past the 10s function timeout). Falls back on ANY primary
+// error now, not just 429, so a future model retirement self-heals instead of
+// going silently dark again.
 let groqDowngradeUntil = 0;
 async function callAI(prompt, responseSchema, opts = {}) {
   const maxTokens = opts.maxTokens || 2000;
@@ -1943,9 +1963,9 @@ async function callAI(prompt, responseSchema, opts = {}) {
     try {
       return await callGroq(prompt, primary, maxTokens);
     } catch (err) {
-      if (String(err).includes("429") && primary !== "openai/gpt-oss-20b") {
+      if (primary !== "openai/gpt-oss-20b") {
         groqDowngradeUntil = Date.now() + 30 * 60000;
-        console.warn("Groq 70B rate-limited — sticky-downgrading to 8B for 30 min");
+        console.warn(`Groq primary (${primary}) failed — sticky-downgrading to fallback for 30 min: ${String(err).slice(0, 200)}`);
         return await callGroq(prompt, "openai/gpt-oss-20b", maxTokens);
       }
       throw err;
@@ -2065,9 +2085,28 @@ function qualityScore(s, signal, calibration) {
 // Each alert carries a stable key; we skip any key already sent (stored on the
 // ledger) so the SAME alert never emails twice — even if two runs overlap.
 async function dispatchAlerts(events, ledger = null, riskSettings = null) {
-  const { entered = [], pending = [], cancelled = [], closed = [], manage = [] } = events || {};
+  const { entered = [], pending = [], cancelled = [], closed = [], manage = [], aiHealth = null } = events || {};
   const sent = new Set((ledger && ledger.sentAlerts) || []);
   const items = []; // { key, text }
+
+  // AI LAYER HEALTH — this exact failure mode (a model quietly retired by the
+  // provider) once killed every AI call for days with nothing louder than an
+  // "error" field buried in the JSON. Alert once per day while it's down
+  // (key includes the date, so it re-fires daily until fixed, not every 30
+  // min), and once clearly when it recovers.
+  if (aiHealth) {
+    const day = new Date().toISOString().slice(0, 10);
+    if (aiHealth.down) {
+      items.push({
+        key: `AI:down:${day}`,
+        text: `🚨 AI LAYER DOWN — every signal call is failing.\n` +
+          `Error: ${aiHealth.error}\nThe desk is running on gate-only fallback (no analysis, no deliberation) ` +
+          `until this is fixed. Check the AI provider's model list — a retired/renamed model is the most likely cause.`,
+      });
+    } else if (aiHealth.recovered) {
+      items.push({ key: `AI:recovered:${aiHealth.recoveredKey}`, text: `✅ AI LAYER RECOVERED — signals and the desk are analyzing normally again.` });
+    }
+  }
 
   const sizeLineFor = (entry, stop, pair, mult) => {
     const ps = positionSize(entry, stop, pair, riskSettings);
