@@ -40,8 +40,11 @@ exports.handler = async (event) => {
   // ?mr=1 tests the MEAN-REVERSION candidate strategy (ranging regimes only)
   // instead of the trend strategy — evidence before it's allowed anywhere near live.
   const mr = qs.mr === "1" || qs.mr === "true";
+  // ?sb=1 tests the ICT SILVER BULLET candidate — same evidence-gated discipline.
+  const sb = qs.sb === "1" || qs.sb === "true";
   const started = Date.now();
-  const out = { generatedAt: new Date().toISOString(), qualityGate: gate, strategy: mr ? "mean-reversion (candidate)" : "trend (live)", method: METHOD_NOTE, results: {} };
+  const strategy = sb ? "ICT silver bullet (candidate)" : mr ? "mean-reversion (candidate)" : "trend (live)";
+  const out = { generatedAt: new Date().toISOString(), qualityGate: gate, strategy, method: sb ? SB_METHOD_NOTE : METHOD_NOTE, results: {} };
 
   for (const pair of pairs) {
     if (Date.now() - started > 8000) {
@@ -50,7 +53,7 @@ exports.handler = async (event) => {
     }
     try {
       const base = await C.getCandles(pair);
-      out.results[pair] = backtestPair(pair, base, gate, mr);
+      out.results[pair] = backtestPair(pair, base, gate, mr, sb);
     } catch (err) {
       out.results[pair] = { error: String(err) };
     }
@@ -64,10 +67,34 @@ const METHOD_NOTE =
   65 + " gate + pullback entries + TP1 partial + half-R trail), spread charged per trade. " +
   "AI layer + news filter not replayable historically; per-pair (no cross-pair guards).";
 
+const SB_METHOD_NOTE =
+  "ICT Silver Bullet candidate: trades ONLY inside the London (3-4am NY) / AM (10-11am NY) / " +
+  "PM (2-3pm NY) kill-zone windows. Setup: price sweeps the prior 20-bar high/low (liquidity " +
+  "grab), then within 3 bars a 3-candle Fair Value Gap confirms a reversal -> enter at the " +
+  "confirming bar's close, stop just beyond the sweep wick, targets at 1.8R/3R via the same " +
+  "grader (TP1 partial + half-R trail) as every other candidate. Spread charged. Same honest " +
+  "limitations as the trend backtest (AI/news not replayable, per-pair, no cross-pair guards).";
+
+// US DST: 2nd Sunday of March 07:00 UTC (2am EST) -> 1st Sunday of November 06:00 UTC (2am EDT).
+function isUsDst(d) {
+  const y = d.getUTCFullYear();
+  const mar1Dow = new Date(Date.UTC(y, 2, 1)).getUTCDay();
+  const dstStart = Date.UTC(y, 2, 1 + ((7 - mar1Dow) % 7) + 7, 7);
+  const nov1Dow = new Date(Date.UTC(y, 10, 1)).getUTCDay();
+  const dstEnd = Date.UTC(y, 10, 1 + ((7 - nov1Dow) % 7), 6);
+  const t = d.getTime();
+  return t >= dstStart && t < dstEnd;
+}
+// London 3-4am / AM 10-11am / PM 2-3pm, all New York local time.
+function inSilverBulletWindow(d) {
+  const h = d.getUTCHours();
+  return isUsDst(d) ? (h === 7 || h === 14 || h === 18) : (h === 8 || h === 15 || h === 19);
+}
+
 // ---------------------------------------------------------------------------
 // Per-pair simulation
 // ---------------------------------------------------------------------------
-function backtestPair(pair, base, gate, mr) {
+function backtestPair(pair, base, gate, mr, sb) {
   if (gate == null) gate = C.NOTIFY_MIN_SCORE;
   const n = base.closes.length;
   if (n < 1400) return { error: "not enough history (" + n + " bars)" };
@@ -83,6 +110,7 @@ function backtestPair(pair, base, gate, mr) {
   const trades = [];
   let open = null;      // one open trade per pair+direction (anti-stacking) — matches live
   let pending = null;   // one pending setup (same pair+direction dedup)
+  let sbWatch = null;    // silver-bullet: a liquidity sweep watching for FVG confirmation
 
   const dtms = base.datetimes;
   const ts = (i) => C.tparseUTC(dtms[i]);
@@ -141,7 +169,41 @@ function backtestPair(pair, base, gate, mr) {
     }
 
     // ---- 3. New signal.
-    if (mr) {
+    if (sb) {
+      // ICT SILVER BULLET (candidate, evidence-gated): only inside kill-zone
+      // windows, a liquidity sweep of the recent 20-bar extreme followed within
+      // 3 bars by a fair-value-gap reversal -> enter at the confirming close.
+      if (sbWatch && i > sbWatch.expiresAtBar) sbWatch = null; // watch timed out
+      if (sbWatch && !open && !pending) {
+        const buy = sbWatch.direction === "buy";
+        const gapConfirmed = buy ? base.highs[i - 2] < base.lows[i] : base.lows[i - 2] > base.highs[i];
+        if (gapConfirmed) {
+          const atr = snap.atr && snap.atr > 0 ? snap.atr : snap.price * 0.001;
+          const dp = snap.price >= 10 ? 3 : 5;
+          const rd = (x) => Number(x.toFixed(dp));
+          const entry = snap.price;
+          const buffer = 0.2 * atr;
+          const sl = rd(buy ? sbWatch.sweepExtreme - buffer : sbWatch.sweepExtreme + buffer);
+          const stopDist = Math.abs(entry - sl);
+          if (stopDist > 0) {
+            open = {
+              pair, direction: sbWatch.direction,
+              entry: rd(entry), sl,
+              tp1: rd(buy ? entry + 1.8 * stopDist : entry - 1.8 * stopDist),
+              tp2: rd(buy ? entry + 3 * stopDist : entry - 3 * stopDist),
+              qualityScore: 66, openedTs: barTs, peakR: 0, lockedR: -1,
+              partialTaken: false, bankedR: 0, gradedUpTo: barTs,
+            };
+          }
+          sbWatch = null;
+        }
+      } else if (!open && !pending && !sbWatch && i >= 20 && inSilverBulletWindow(new Date(barTs))) {
+        const recentHigh = Math.max(...base.highs.slice(i - 20, i));
+        const recentLow = Math.min(...base.lows.slice(i - 20, i));
+        if (hi > recentHigh) sbWatch = { direction: "sell", sweepExtreme: hi, expiresAtBar: i + 3 };
+        else if (lo < recentLow) sbWatch = { direction: "buy", sweepExtreme: lo, expiresAtBar: i + 3 };
+      }
+    } else if (mr) {
       // MEAN-REVERSION CANDIDATE (evidence-gated): trade ONLY the chop the trend
       // strategy sits out. Ranging regime + price stretched to a Bollinger band
       // with stochastic agreement -> fade back toward the middle of the range.
