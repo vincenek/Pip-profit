@@ -33,7 +33,7 @@
 //
 // Optional:
 //   SIGNAL_PAIRS  default "EUR/USD,GBP/USD,USD/JPY"
-//   GROQ_MODEL    default "llama-3.3-70b-versatile"
+//   GROQ_MODEL    default "openai/gpt-oss-120b"
 //   GEMINI_MODEL  default "gemini-2.0-flash"
 //   NEWS_WINDOW_MIN  minutes around a high-impact event to blackout (default 60)
 // ---------------------------------------------------------------------------
@@ -91,8 +91,8 @@ const PAIRS = (process.env.SIGNAL_PAIRS || "EUR/USD,GBP/USD,USD/JPY")
 // but its DAILY token budget (~100k) is much smaller than 8b's (~500k). At the
 // current compact-prompt + 3-pair + 30-min schedule this should fit; if it
 // starts 429ing on the daily cap, either widen the schedule (netlify.toml) or
-// fall back to GROQ_MODEL=llama-3.1-8b-instant via env var.
-const GROQ_MODEL = process.env.GROQ_MODEL || "llama-3.3-70b-versatile";
+// fall back to GROQ_MODEL=openai/gpt-oss-20b via env var.
+const GROQ_MODEL = process.env.GROQ_MODEL || "openai/gpt-oss-120b";
 const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-2.0-flash";
 const TD_KEY = process.env.TWELVEDATA_API_KEY;
 const NEWS_WINDOW_MIN = Number(process.env.NEWS_WINDOW_MIN || 60);
@@ -1926,22 +1926,27 @@ async function critiqueSignals(items) {
 }
 
 // Provider router — Groq if a key is set (generous free tier), else Gemini.
-// RESILIENCE: if the primary (70B) model hits its rate/daily-token limit, the
-// agent falls back to 8B (5x larger budget) — and REMEMBERS the downgrade for
-// 30 min so later calls stop paying the 429-then-retry double tax (which was
-// pushing multi-call runs past the 10s function timeout).
+// MODELS (2026-08): llama-3.3-70b-versatile and llama-3.1-8b-instant were
+// RETIRED by Groq on 2026-08-16 -- switched to their recommended replacements,
+// openai/gpt-oss-120b (primary) and openai/gpt-oss-20b (fallback). Both share
+// the SAME free-tier daily budget (200k tokens/day) so 120b is a strict
+// upgrade over the old 70b split (better reasoning AND 2x its old 100k/day).
+// RESILIENCE: if the primary hits its rate/daily-token limit, the agent falls
+// back to the smaller model — and REMEMBERS the downgrade for 30 min so later
+// calls stop paying the 429-then-retry double tax (which was pushing
+// multi-call runs past the 10s function timeout).
 let groqDowngradeUntil = 0;
 async function callAI(prompt, responseSchema, opts = {}) {
   const maxTokens = opts.maxTokens || 2000;
   if (process.env.GROQ_API_KEY) {
-    const primary = Date.now() < groqDowngradeUntil ? "llama-3.1-8b-instant" : GROQ_MODEL;
+    const primary = Date.now() < groqDowngradeUntil ? "openai/gpt-oss-20b" : GROQ_MODEL;
     try {
       return await callGroq(prompt, primary, maxTokens);
     } catch (err) {
-      if (String(err).includes("429") && primary !== "llama-3.1-8b-instant") {
+      if (String(err).includes("429") && primary !== "openai/gpt-oss-20b") {
         groqDowngradeUntil = Date.now() + 30 * 60000;
         console.warn("Groq 70B rate-limited — sticky-downgrading to 8B for 30 min");
-        return await callGroq(prompt, "llama-3.1-8b-instant", maxTokens);
+        return await callGroq(prompt, "openai/gpt-oss-20b", maxTokens);
       }
       throw err;
     }
