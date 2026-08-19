@@ -83,7 +83,14 @@ async function mergeDeskLog(store) {
   return log;
 }
 
-const PAIRS = (process.env.SIGNAL_PAIRS || "EUR/USD,GBP/USD,USD/JPY")
+// GBP/USD PAUSED (2026-08-19): fresh backtest showed real negative expectancy
+// (-0.117R, out-of-sample -0.269R) -- not just higher variance, an actual
+// negative edge right now. Halving its risk earlier didn't fix that (position
+// size doesn't change expectancy). No NEW GBP/USD signals until a re-run of
+// `backtest?pair=GBP/USD` shows positive expectancy again (existing open
+// GBP/USD trades still get managed to completion via the extraPairs path below
+// -- nothing orphaned). Re-add "GBP/USD" here (or set SIGNAL_PAIRS) to resume.
+const PAIRS = (process.env.SIGNAL_PAIRS || "EUR/USD,USD/JPY")
   .split(",")
   .map((p) => p.trim().toUpperCase())
   .filter(Boolean);

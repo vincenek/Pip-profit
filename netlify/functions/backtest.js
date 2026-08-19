@@ -42,6 +42,10 @@ exports.handler = async (event) => {
   const mr = qs.mr === "1" || qs.mr === "true";
   // ?sb=1 tests the ICT SILVER BULLET candidate — same evidence-gated discipline.
   const sb = qs.sb === "1" || qs.sb === "true";
+  // ?minAdx=30 hard-requires a CONFIRMED strong trend (4h ADX >= N) before any
+  // new signal — testing whether stricter trend confirmation actually helps,
+  // in and out of sample, not just a hunch.
+  const minAdx = Number(qs.minAdx) || 0;
   const started = Date.now();
   const strategy = sb ? "ICT silver bullet (candidate)" : mr ? "mean-reversion (candidate)" : "trend (live)";
   const out = { generatedAt: new Date().toISOString(), qualityGate: gate, strategy, method: sb ? SB_METHOD_NOTE : METHOD_NOTE, results: {} };
@@ -53,7 +57,7 @@ exports.handler = async (event) => {
     }
     try {
       const base = await C.getCandles(pair);
-      out.results[pair] = backtestPair(pair, base, gate, mr, sb);
+      out.results[pair] = backtestPair(pair, base, gate, mr, sb, minAdx);
     } catch (err) {
       out.results[pair] = { error: String(err) };
     }
@@ -94,7 +98,7 @@ function inSilverBulletWindow(d) {
 // ---------------------------------------------------------------------------
 // Per-pair simulation
 // ---------------------------------------------------------------------------
-function backtestPair(pair, base, gate, mr, sb) {
+function backtestPair(pair, base, gate, mr, sb, minAdx) {
   if (gate == null) gate = C.NOTIFY_MIN_SCORE;
   const n = base.closes.length;
   if (n < 1400) return { error: "not enough history (" + n + " bars)" };
@@ -234,9 +238,11 @@ function backtestPair(pair, base, gate, mr, sb) {
         }
       }
     } else {
-      // TREND (the live strategy): bias direction + quality gate + pullback pending.
+      // TREND (the live strategy): bias direction + quality gate + pullback pending
+      // + optional hard trend-strength requirement (minAdx sweep).
       const dir = snap.biasScore >= 3 ? "buy" : snap.biasScore <= -3 ? "sell" : null;
-      if (dir) {
+      const trendOk = !minAdx || (snap.h4 && snap.h4.adx != null && snap.h4.adx >= minAdx);
+      if (dir && trendOk) {
         // cancel-on-flip
         if (pending && pending.direction !== dir) pending = null;
         const quality = C.qualityScore(snap, { direction: dir, confidence: 70 }, { total: 0 });
