@@ -117,6 +117,14 @@ exports.handler = async (event) => {
         if (info) {
           try { cotSeries = await fetchHistoricalCOT(info.market); }
           catch (e) { out.results[pair] = { error: "COT fetch failed: " + String(e).slice(0, 150) }; continue; }
+          if (qs.cotdebug === "1") {
+            out.results[pair] = {
+              cotDebug: true, market: info.market, invert: info.invert,
+              seriesLength: cotSeries.length,
+              first: cotSeries[0], last: cotSeries[cotSeries.length - 1],
+            };
+            continue;
+          }
         } else {
           out.results[pair] = { error: "no COT market mapping for " + pair };
           continue;
